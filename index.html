@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>行為數據分析中心</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow-x: hidden;
+            font-family: "Segoe UI", "Microsoft JhengHei", sans-serif;
+            background: #0f0c29; /* Fallback */
+            background: linear-gradient(to bottom, #0f0c29, #302b63, #24243e);
+            color: #ffffff;
+        }
+
+        /* Three.js Canvas Layer */
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            opacity: 0.8;
+        }
+
+        .main-content {
+            position: relative;
+            z-index: 1;
+            padding-top: 50px;
+            padding-bottom: 50px;
+        }
+
+        /* Glassmorphism Card Style */
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            border-radius: 20px;
+            margin-bottom: 25px;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            overflow: hidden;
+        }
+
+        .glass-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.5);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .glass-header {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            font-weight: 600;
+            letter-spacing: 1px;
+            font-size: 1.1rem;
+            text-transform: uppercase;
+        }
+
+        .glass-header.danger-zone {
+            background: rgba(220, 53, 69, 0.2);
+            color: #ffb3b3;
+        }
+
+        .glass-body {
+            padding: 20px;
+        }
+
+        /* Typography */
+        h1.display-4 {
+            font-weight: 700;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+            margin-bottom: 10px;
+        }
+        
+        .lead {
+            color: #d1d1d1;
+            text-shadow: 0 1px 5px rgba(0,0,0,0.5);
+        }
+
+        .section-title {
+            position: relative;
+            display: inline-block;
+            margin-top: 40px;
+            margin-bottom: 30px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid rgba(255,255,255,0.2);
+            color: #fff;
+            font-weight: 300;
+        }
+
+        /* Glass Buttons */
+        .btn-group-glass {
+            display: flex;
+            margin-bottom: 10px;
+        }
+
+        .btn-glass {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            backdrop-filter: blur(4px);
+            transition: all 0.3s ease;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-grow: 1;
+            text-decoration: none;
+        }
+
+        .btn-glass:hover {
+            background: rgba(255, 255, 255, 0.25);
+            border-color: rgba(255, 255, 255, 0.5);
+            color: #fff;
+            z-index: 2;
+        }
+
+        .btn-glass-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            border-left: none;
+            flex-grow: 0;
+            min-width: 120px;
+            justify-content: center;
+        }
+        
+        .btn-glass-danger {
+            background: rgba(220, 53, 69, 0.15);
+            border: 1px solid rgba(220, 53, 69, 0.3);
+            color: #ffcbcb;
+        }
+
+        .btn-glass-danger:hover {
+            background: rgba(220, 53, 69, 0.3);
+            border-color: rgba(220, 53, 69, 0.6);
+            color: #fff;
+        }
+
+        .btn-glass i {
+            margin-right: 8px;
+            opacity: 0.7;
+        }
+
+        /* Individual Subject Grid */
+        .subject-row {
+            margin-bottom: 10px;
+        }
+        
+        .subject-btn-group {
+            display: flex;
+            width: 100%;
+        }
+        
+        .subject-main-btn {
+            flex-grow: 1;
+            border-top-right-radius: 0;
+            border-bottom-right-radius: 0;
+        }
+        
+        .subject-interp-btn {
+            flex-grow: 0;
+            width: 100px;
+            border-left: none;
+            border-top-left-radius: 0;
+            border-bottom-left-radius: 0;
+            justify-content: center;
+            background: rgba(23, 162, 184, 0.2);
+        }
+        
+        .subject-interp-btn:hover {
+            background: rgba(23, 162, 184, 0.4);
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 10px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f0c29; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #444; 
+            border-radius: 5px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #666; 
+        }
+    </style>
+</head>
+<body>
+
+<!-- Background Canvas for Three.js -->
+<div id="canvas-container"></div>
+
+<div class="container main-content">
+    <div class="text-center mb-5">
+        <h1 class="display-4">NeuroCognitive Analysis Portal</h1>
+        <p class="lead">行為數據視覺化與統計分析中心</p>
+        <p class="small text-white-50">Last Updated: <script>document.write(new Date().toLocaleString());</script></p>
+    </div>
+
+    <div class="row">
+        <!-- Standard Analysis -->
+        <div class="col-lg-6">
+            <div class="glass-card">
+                <div class="glass-header">
+                    <i class="fas fa-filter me-2"></i> 標準分析 (排除極端值)
+                </div>
+                <div class="glass-body">
+                    <p class="card-text text-white-50 mb-4">
+                        排除反應時間 < 200ms 或 > 1500ms 的數據。
+                    </p>
+                    
+                    <!-- Base -->
+                    <div class="btn-group-glass">
+                        <a href="Base/Master_Report_Base.html" class="btn btn-glass" style="border-right:none;">
+                            <span><i class="fas fa-file-alt"></i> 基礎完整報告</span>
+                        </a>
+                        <a href="Base/Interpretation.html" class="btn btn-glass btn-glass-secondary" title="查看統計解讀">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+
+                    <!-- Exclude S5/S10 -->
+                    <div class="btn-group-glass">
+                        <a href="Exclude_S5S10/Master_Report_Exclude_S5S10.html" class="btn btn-glass" style="border-right:none;">
+                            <span><i class="fas fa-user-slash"></i> 排除 S5/S10</span>
+                        </a>
+                        <a href="Exclude_S5S10/Interpretation.html" class="btn btn-glass btn-glass-secondary" title="查看統計解讀">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+
+                    <!-- Missing As Error -->
+                    <div class="btn-group-glass">
+                        <a href="MissingAsError/Master_Report_MissingAsError.html" class="btn btn-glass" style="border-right:none;">
+                            <span><i class="fas fa-exclamation-circle"></i> 漏答視為錯誤</span>
+                        </a>
+                        <a href="MissingAsError/Interpretation.html" class="btn btn-glass btn-glass-secondary" title="查看統計解讀">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- No Outlier Exclusion -->
+        <div class="col-lg-6">
+            <div class="glass-card">
+                <div class="glass-header danger-zone">
+                    <i class="fas fa-database me-2"></i> 完整數據 (保留極端值)
+                </div>
+                <div class="glass-body">
+                    <p class="card-text text-white-50 mb-4">
+                        保留所有有效反應時間數據。
+                    </p>
+                    
+                    <!-- Base No Outlier -->
+                    <div class="btn-group-glass">
+                        <a href="NoOutlierExclusion/Report_Base_NoOutlier.html" class="btn btn-glass btn-glass-danger" style="border-right:none;">
+                            <span><i class="fas fa-file-contract"></i> 基礎完整報告</span>
+                        </a>
+                        <a href="NoOutlierExclusion/Interpretation_Base.html" class="btn btn-glass btn-glass-danger" style="border-left:none; min-width:100px; justify-content:center;">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+
+                    <!-- Exclude No Outlier -->
+                    <div class="btn-group-glass">
+                        <a href="NoOutlierExclusion/Report_Exclude_S5S10_NoOutlier.html" class="btn btn-glass btn-glass-danger" style="border-right:none;">
+                            <span><i class="fas fa-user-times"></i> 排除 S5/S10</span>
+                        </a>
+                        <a href="NoOutlierExclusion/Interpretation_Exclude.html" class="btn btn-glass btn-glass-danger" style="border-left:none; min-width:100px; justify-content:center;">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+
+                    <!-- Missing No Outlier -->
+                    <div class="btn-group-glass">
+                        <a href="NoOutlierExclusion/Report_MissingAsError_NoOutlier.html" class="btn btn-glass btn-glass-danger" style="border-right:none;">
+                            <span><i class="fas fa-exclamation-triangle"></i> 漏答視為錯誤</span>
+                        </a>
+                        <a href="NoOutlierExclusion/Interpretation_Missing.html" class="btn btn-glass btn-glass-danger" style="border-left:none; min-width:100px; justify-content:center;">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <h3 class="section-title"><i class="fas fa-users me-2"></i>個別受試者詳細報告</h3>
+    <div class="glass-card">
+        <div class="glass-body">
+            <p class="text-white-50 mb-4">點擊 ID 進入詳細儀表板，點擊「解讀」查看自動化統計結論。</p>
+            <div class="row g-3">
+                <!-- S001 -->
+                <div class="col-md-6 col-lg-4">
+                    <div class="subject-btn-group">
+                        <a href="Individual_Reports/Output/Subject_Report_S001.html" class="btn btn-glass subject-main-btn">S001</a>
+                        <a href="Individual_Reports/Output/Interpretation_S001.html" class="btn btn-glass subject-interp-btn"><i class="fas fa-glasses"></i></a>
+                    </div>
+                </div>
+                <!-- S002 -->
+                <div class="col-md-6 col-lg-4">
+                    <div class="subject-btn-group">
+                        <a href="Individual_Reports/Output/Subject_Report_S002.html" class="btn btn-glass subject-main-btn">S002</a>
+                        <a href="Individual_Reports/Output/Interpretation_S002.html" class="btn btn-glass subject-interp-btn"><i class="fas fa-glasses"></i></a>
+                    </div>
+                </div>
+                <!-- S003 -->
+                <div class="col-md-6 col-lg-4">
+                    <div class="subject-btn-group">
+                        <a href="Individual_Reports/Output/Subject_Report_S003.html" class="btn btn-glass subject-main-btn">S003</a>
+                        <a href="Individual_Reports/Output/Interpretation_S003.html" class="btn btn-glass subject-interp-btn"><i class="fas fa-glasses"></i></a>
+                    </div>
+                </div>
+                <!-- S004 -->
+                <div class="col-md-6 col-lg-4">
+                    <div class="subject-btn-group">
+                        <a href="Individual_Reports/Output/Subject_Report_S004.html" class="btn btn-glass subject-main-btn">S004</a>
+                        <a href="Individual_Reports/Output/Interpretation_S004.html" class="btn btn-glass subject-interp-btn"><i class="fas fa-glasses"></i></a>
+                    </div>
+                </div>
+                <!-- S005 -->
+                <div class="col-md-6 col-lg-4">
+                    <div class="subject-btn-group">
+                        <a href="Individual_Reports/Output/Subject_Report_S005.html" class="btn btn-glass subject-main-btn">S005</a>
+                        <a href="Individual_Reports/Output/Interpretation_S005.html" class="btn btn-glass subject-interp-btn"><i class="fas fa-glasses"></i></a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- Three.js Library -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+    // Three.js "Particle Brain/Network" Animation
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    
+    // Camera
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 30;
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    container.appendChild(renderer.domElement);
+
+    // Particles Group
+    const particlesGroup = new THREE.Group();
+    scene.add(particlesGroup);
+
+    // Create Particles (Approximating a brain/sphere shape)
+    const particleCount = 2000;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const colors = new Float32Array(particleCount * 3);
+
+    const color1 = new THREE.Color(0x00d2ff); // Cyan
+    const color2 = new THREE.Color(0x3a7bd5); // Deep Blue
+
+    for (let i = 0; i < particleCount; i++) {
+        // Spherical distribution with some noise to look organic
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(Math.random() * 2 - 1);
+        const radius = 12 + Math.random() * 2; // Base radius with thickness
+
+        // Convert spherical to cartesian
+        let x = radius * Math.sin(phi) * Math.cos(theta);
+        let y = radius * Math.sin(phi) * Math.sin(theta);
+        let z = radius * Math.cos(phi);
+
+        // Morph sphere slightly to look more like a brain (ovoid)
+        // Flatten bottom slightly, elongate Z slightly
+        x *= 0.9; 
+        y *= 0.8;
+        z *= 1.1;
+
+        // Split into hemispheres visually (gap in middle)
+        if (x > 0) x += 0.5;
+        if (x < 0) x -= 0.5;
+
+        positions[i * 3] = x;
+        positions[i * 3 + 1] = y;
+        positions[i * 3 + 2] = z;
+
+        // Mix colors
+        const mixedColor = color1.clone().lerp(color2, Math.random());
+        colors[i * 3] = mixedColor.r;
+        colors[i * 3 + 1] = mixedColor.g;
+        colors[i * 3 + 2] = mixedColor.b;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    // Particle Material
+    const material = new THREE.PointsMaterial({
+        size: 0.3,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending
+    });
+
+    const particleSystem = new THREE.Points(geometry, material);
+    particlesGroup.add(particleSystem);
+
+    // Add connections (lines) for a "neural" look - Optimized
+    // Only connecting a subset to keep performance high
+    const lineMaterial = new THREE.LineBasicMaterial({
+        color: 0x4da6ff,
+        transparent: true,
+        opacity: 0.15
+    });
+
+    const lineGeometry = new THREE.BufferGeometry();
+    const linePositions = [];
+    
+    // Simple logic: connect nearby points (naive O(N^2) avoided by random sampling)
+    for (let i = 0; i < 300; i++) {
+        const index1 = Math.floor(Math.random() * particleCount);
+        const index2 = Math.floor(Math.random() * particleCount);
+        
+        const p1 = {
+            x: positions[index1 * 3],
+            y: positions[index1 * 3 + 1],
+            z: positions[index1 * 3 + 2]
+        };
+        const p2 = {
+            x: positions[index2 * 3],
+            y: positions[index2 * 3 + 1],
+            z: positions[index2 * 3 + 2]
+        };
+
+        const dist = Math.sqrt((p1.x-p2.x)**2 + (p1.y-p2.y)**2 + (p1.z-p2.z)**2);
+        
+        if (dist < 5) { // Only connect if somewhat close
+            linePositions.push(p1.x, p1.y, p1.z);
+            linePositions.push(p2.x, p2.y, p2.z);
+        }
+    }
+    lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+    const lines = new THREE.LineSegments(lineGeometry, lineMaterial);
+    particlesGroup.add(lines);
+
+
+    // Mouse Interaction
+    let mouseX = 0;
+    let mouseY = 0;
+    let targetRotationX = 0;
+    let targetRotationY = 0;
+
+    document.addEventListener('mousemove', (event) => {
+        mouseX = (event.clientX - window.innerWidth / 2) * 0.001;
+        mouseY = (event.clientY - window.innerHeight / 2) * 0.001;
+    });
+
+    // Animation Loop
+    const animate = () => {
+        requestAnimationFrame(animate);
+
+        // Constant slow rotation
+        particlesGroup.rotation.y += 0.002;
+        
+        // Mouse interaction smoothing
+        targetRotationX = mouseY * 0.5;
+        targetRotationY = mouseX * 0.5;
+        
+        particlesGroup.rotation.x += 0.05 * (targetRotationX - particlesGroup.rotation.x);
+        particlesGroup.rotation.z += 0.05 * (targetRotationY - particlesGroup.rotation.z); // Tilt slightly
+
+        // Gentle pulse
+        const time = Date.now() * 0.001;
+        particleSystem.scale.setScalar(1 + Math.sin(time * 2) * 0.02);
+
+        renderer.render(scene, camera);
+    };
+
+    animate();
+
+    // Handle Resize
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+
+</body>
+</html>

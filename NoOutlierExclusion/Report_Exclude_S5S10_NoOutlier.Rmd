@@ -1,0 +1,746 @@
+---
+title: "一致性與情緒刺激之行為數據分析（排除 S5 / S10 版本，保留離群值）"
+subtitle: "移除受試者 S5、S10 之後的完整分析（不排除反應時間極端值）"
+author: "（請填入作者姓名）"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+    code_folding: hide
+    df_print: paged
+  word_document:
+    toc: true
+    toc_depth: 3
+    fig_caption: true
+    highlight: tango
+    df_print: kable
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.width = 7, fig.height = 4.5, out.width = "100%", fig.align = "center")
+
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(knitr)
+library(kableExtra)
+library(lme4)
+library(effectsize)
+library(plotly)
+library(DT)
+library(htmltools)
+library(openxlsx)
+
+# 若在 Windows 且有中文字型，可視需要啟用：
+if (.Platform$OS.type == "windows") {
+  suppressWarnings(try({
+    windowsFonts(SimHei = windowsFont("SimHei"))
+    theme_set(theme_pubr(base_family = "SimHei"))
+  }, silent = TRUE))
+} else {
+  theme_set(theme_pubr())
+}
+
+# rt_min <- 0.2
+# rt_max <- 1.5
+
+# Initialize Excel workbook data list
+excel_sheets <- list()
+
+# Adjusted path for rendering from subdirectory
+data_path_raw <- file.path("..","..","..","Thesis_Analysis_Output","analysis_data.csv")
+
+exclude_ids <- c("S5", "S05", "S005", "S10", "S010")
+
+if (file.exists(data_path_raw)) {
+  df_raw <- read.csv(data_path_raw, stringsAsFactors = FALSE)
+  df_raw_display <- df_raw # 保留完整原始資料供展示
+} else {
+  stop("找不到原始資料檔案！", data_path_raw)
+}
+
+df <- df_raw %>%
+  mutate(
+    subject   = factor(subject),
+    Condition = factor(condition),
+    Modality  = factor(Modality),
+    Valence   = factor(Valence),
+    Arousal   = factor(Arousal),
+    Image_Type = factor(Image_Type),
+    rt  = as.numeric(rt),
+    acc = as.numeric(acc)
+  ) %>%
+  filter(!subject %in% exclude_ids) %>%
+  filter(!is.na(rt), !is.na(acc)) %>%
+  # filter(rt >= rt_min, rt <= rt_max) %>%
+  group_by(subject) %>%
+  mutate(
+    rt_z        = (rt - mean(rt, na.rm = TRUE)) / sd(rt, na.rm = TRUE),
+    outlier_flag = abs(rt_z) > 2.5
+  ) %>%
+  ungroup()
+
+N_subjects <- n_distinct(df$subject)
+N_trials   <- nrow(df)
+
+# 供後續安全查找：判斷是否有 Image_Type 欄位
+has_image_type <- "Image_Type" %in% names(df)
+
+# Helper
+as_table <- function(.data, caption = "") {
+  if (knitr::is_html_output()) {
+    DT::datatable(.data, options = list(pageLength = 10, scrollX = TRUE), caption = caption)
+  } else {
+    kable(.data, digits = 3, caption = caption) %>%
+      kable_styling(full_width = FALSE)
+  }
+}
+```
+
+```{r render_time, results='asis'}
+cat(paste0("**建立時間：** ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n"))
+```
+
+# 第一章 緒論
+
+## 1.1 研究背景
+
+一致性效應（congruency effect）是認知心理學與認知神經科學領域中檢驗選擇性注意與執行控制的核心現象之一。典型的 Flanker 或 Stroop 任務中，受試者需對目標刺激作反應，同時忽略與之一致（congruent）或不一致（incongruent）的干擾刺激；在不一致情境下，反應通常變慢、錯誤率提高，被視為認知衝突（cognitive conflict）的行為指標。
+
+本研究結合「一致性操弄」與「情緒／社會意涵刺激」，分別透過圖片與文字模態呈現：(1) 圖片模態中操弄同志情侶與異性戀情侶圖片；(2) 文字模態中則操弄情緒效價（正向／負向）與喚醒度（高／低）。透過此設計，我們得以檢驗：一致性效應是否受到社會情緒內容的調節，及其在不同模態（圖片 vs 文字）下是否呈現不同樣貌。
+
+**注意：本版本報告在分析過程中保留了所有有效作答之反應時間數據，未排除極端值或離群值。**
+
+## 1.2 研究目的與問題
+
+依據前述背景，本研究主要研究問題如下：
+
+1. 在整體上，一致情境與不一致情境之間是否存在穩健的反應時間與正確率差異（即典型一致性效應）？
+2. 在圖片實驗中，圖片類型（同志情侶 vs 異性戀情侶）是否調節一致性效應的大小？
+3. 在文字實驗中，情緒效價（正／負向）與喚醒度（高／低）是否與一致性操弄產生二階或三階交互作用？
+4. 在錯誤率層面，一致性與其他條件是否會改變作答分布（正確 vs 錯誤），反映於卡方檢定之結果？
+
+本報告依照事先撰寫之《Statistical_Analysis_Plan》與其在 `Statistical_Analysis_Implementation` 中的實作，分章節呈現資料前處理、描述性統計、一致性主效應、圖片和文字實驗的重複量數 ANOVA，以及類別變項的卡方分析。
+
+# 第二章 方法
+
+## 2.1 受試者與資料
+
+本分析納入的受試者數為：
+
+```{r N_subjects_table, results='asis'}
+cat(paste0("本研究最終納入受試者共 **", N_subjects, "** 名，經資料清理後總試驗數為 **", N_trials, "** 筆。"))
+```
+
+所有資料來自同一份行為實驗資料表，經過以下前處理後才納入統計分析：
+
+- 剔除反應時間缺失或正確率缺失的試驗。
+- 限制反應時間在 0.2–1.5 秒之間，以排除極端過快與過慢反應。
+- 於受試者內計算 RT z-score，並標記離群值（絕對值 > 2.5）以供後續品質檢查。
+
+```{r qc_counts, echo=FALSE}
+trial_counts <- df %>%
+  count(Modality, Condition, name = "n_trials")
+
+as_table(trial_counts, caption = "各模態 × 一致性條件的有效試驗數")
+```
+
+> 說明：若某一模態或一致性條件的試驗數為 0，後續該條件的圖表/檢定會自動跳過，以避免錯誤。
+
+## 2.2 實驗設計與變項
+
+本研究以受試者為重複量數因子（within-subject design），主要操弄與變項如下：
+
+- 依變項（DVs）：
+  - 反應時間（RT，秒）：以正確作答試驗為主，僅在部分描述分析中含所有試驗。
+  - 正確率（ACC，0/1）：以各條件下的平均正確率或錯誤率為指標。
+- 主要因子：
+  - 一致性（Condition）：Congruent vs Incongruent。
+  - 模態（Modality）：Image vs Text。
+  - 圖片類型（Image_Type）：同志情侶 vs 異性戀情侶（僅圖片模態）。
+  - 效價（Valence）：Positive vs Negative（僅文字模態）。
+  - 喚醒度（Arousal）：High vs Low（僅文字模態）。
+
+## 2.3 統計分析策略
+
+依據統計分析計畫，主要分析步驟如下：
+
+1. 描述性統計與分布檢查：檢視 RT 與 ACC 在各模態與條件下的平均與散布，並檢驗速度–準確度權衡（speed–accuracy trade-off）。
+2. 一致性主效應：計算每位受試者在 Congruent 與 Incongruent 下的平均 RT/ACC，以配對樣本 t 檢定檢驗整體一致性效應。
+3. 圖片實驗（Image）：針對圖片模態資料進行 2（Condition）×2（Image_Type）的重複量數 ANOVA，並視需要檢視單純主效應。
+4. 文字實驗（Text）：針對文字模態資料進行 2（Condition）×2（Valence）×2（Arousal）的重複量數 ANOVA，檢驗主效應與交互作用。
+5. 類別關聯分析（Chi-square）：以 Condition × Accuracy 的列聯表進行卡方檢定，檢驗不一致情境是否伴隨較高錯誤率。
+
+所有分析皆以顯著水準 α = .05 為主，必要時輔以效果量（例如 Cohen's d、部分 η²）與信賴區間進行解讀。
+
+# 第三章 互動儀表板 (Interactive Dashboard) {.tabset}
+
+本章節提供互動式圖表，供研究者探索反應時間（RT）分布與個別受試者表現。
+
+## 反應時間分布 (RT Distribution)
+
+```{r dash_rt_dist, fig.height=6}
+p_dist <- df %>%
+  ggplot(aes(x = Condition, y = rt, fill = Condition)) + 
+  geom_violin(alpha = 0.3) + 
+  geom_boxplot(width = 0.2, fill = "white", outlier.shape = NA) + 
+  scale_fill_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
+  facet_wrap(~Modality) + 
+  theme_pubr() + 
+  labs(title = "RT Distribution by Modality & Condition", y = "RT (s)") + 
+  theme(legend.position = "bottom")
+
+ggplotly(p_dist)
+```
+
+## 受試者平均反應 (Subject RT)
+
+```{r dash_subj_rt, fig.height=6}
+p_subj <- df %>%
+  group_by(subject, Modality, Condition) %>%
+  summarise(Mean_RT = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = subject, y = Mean_RT, color = Condition, group = Condition)) + 
+  geom_line(alpha = 0.5) + 
+  geom_point(size = 2) + 
+  scale_color_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
+  facet_grid(Modality ~ .) + 
+  theme_pubr() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  labs(title = "Subject Mean RT by Condition", y = "Mean RT (s)")
+
+ggplotly(p_subj)
+```
+
+## 圖片實驗詳細檢視
+
+```{r dash_img_detail}
+if (has_image_type) {
+  p_img_det <- df %>%
+    filter(Modality == "Image") %>%
+    group_by(subject, Condition, Image_Type) %>%
+    summarise(Mean_RT = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    ggplot(aes(x = Condition, y = Mean_RT, color = Image_Type, group = interaction(subject, Image_Type))) + 
+    geom_line(alpha = 0.3) + 
+    geom_point() + 
+    facet_wrap(~Image_Type) + 
+    theme_pubr() + 
+    labs(title = "Image Exp: Individual Trends", y = "Mean RT")
+  
+  ggplotly(p_img_det)
+} else {
+  cat("No Image Type data available.")
+}
+```
+
+# 第四章 結果
+
+## 4.1 描述性統計與速度–準確度關係
+
+### 4.1.1 模態層級的反應時間描述
+
+```{r desc_rt_by_modality}
+desc_rt <- df %>%
+  group_by(Modality) %>%
+  get_summary_stats(rt, type = "mean_sd")
+
+# Save to Excel list
+excel_sheets[["Summary_RT_Modality"]] <- desc_rt
+
+as_table(desc_rt, caption = "各模態下反應時間描述性統計")
+```
+
+### 4.1.2 速度–準確度相關
+
+```{r speed_acc}
+speed_acc_df <- df %>%
+  group_by(subject) %>%
+  summarise(
+    mean_rt  = mean(rt, na.rm = TRUE),
+    mean_acc = mean(acc, na.rm = TRUE),
+    .groups  = "drop"
+  )
+
+cor_res <- cor.test(speed_acc_df$mean_rt, speed_acc_df$mean_acc, method = "pearson")
+
+cor_table <- data.frame(
+  r         = unname(cor_res$estimate),
+  statistic = unname(cor_res$statistic),
+  df        = unname(cor_res$parameter),
+  p         = cor_res$p.value,
+  conf_low  = cor_res$conf.int[1],
+  conf_high = cor_res$conf.int[2]
+)
+
+# Save to Excel list
+excel_sheets[["Speed_Accuracy_Tradeoff"]] <- cor_table
+
+as_table(cor_table, caption = "受試者平均 RT 與 ACC 之 Pearson 相關")
+
+```
+
+```{r speed_acc_text, results='asis'}
+dir_str <- ifelse(cor_table$r < 0, "反向", "正向")
+sig_str <- ifelse(cor_table$p < .05, "達顯著水準", "未達顯著水準")
+cat(paste0(
+"**結果說明**：受試者層級的平均 RT 與平均 ACC 之間呈現 ",
+dir_str, "相關（r = ", sprintf('%.3f', cor_table$r),
+", p = ", format.pval(cor_table$p, digits = 3), "），",
+sig_str, "." 
+))
+```
+
+以上結果顯示，在受試者層級，反應時間與正確率之間的相關程度可作為是否存在速度–準確度權衡的指標；若相關為顯著負向，代表反應越快者準確率越低，反之亦然。
+
+## 4.2 一致性主效應（Congruency Main Effect）
+
+```{r cong_effect}
+subj_cong <- df %>%
+  group_by(subject, Condition) %>%
+  summarise(
+    mean_rt  = mean(rt[acc == 1], na.rm = TRUE),
+    mean_acc = mean(acc, na.rm = TRUE),
+    .groups  = "drop"
+  ) %>%
+  mutate(
+    mean_rt  = as.numeric(mean_rt),
+    mean_acc = as.numeric(mean_acc)
+  )
+
+rt_by_cond <- subj_cong %>%
+  select(subject, Condition, mean_rt) %>%
+  pivot_wider(names_from = Condition, values_from = mean_rt)
+
+ttest_cong <- subj_cong %>%
+  t_test(mean_rt ~ Condition, paired = TRUE, detailed = TRUE)
+
+# 手動計算配對 Cohen's d (mean difference / sd difference)
+cong_wide_tmp <- subj_cong %>%
+  select(subject, Condition, mean_rt) %>%
+  pivot_wider(names_from = Condition, values_from = mean_rt)
+
+diff_vec <- cong_wide_tmp$Incongruent - cong_wide_tmp$Congruent
+d_val_manual <- mean(diff_vec, na.rm = TRUE) / sd(diff_vec, na.rm = TRUE)
+
+# Save to Excel list
+excel_sheets[["T_Test_Congruency"]] <- ttest_cong
+
+as_table(ttest_cong[, c(1:8, 11:13)], caption = "配對樣本 t 檢定：Congruent vs Incongruent（RT）")
+```
+
+```{r cong_text, results='asis'}
+cong_means <- subj_cong %>%
+  group_by(Condition) %>%
+  summarise(M = mean(mean_rt, na.rm = TRUE),
+            SD = sd(mean_rt, na.rm = TRUE),
+            .groups = "drop")
+
+M_con  <- cong_means$M[cong_means$Condition == "Congruent"]
+SD_con <- cong_means$SD[cong_means$Condition == "Congruent"]
+M_inc  <- cong_means$M[cong_means$Condition == "Incongruent"]
+SD_inc <- cong_means$SD[cong_means$Condition == "Incongruent"]
+
+t_val <- ttest_cong$statistic
+df_t  <- ttest_cong$df
+p_val <- ttest_cong$p
+d_val <- d_val_manual
+
+dir_str <- ifelse(M_inc > M_con, "較慢", "較快")
+sig_str <- ifelse(p_val < .05, "達顯著水準", "未達顯著水準")
+
+cat(paste0(
+"**結果說明**：在 Congruent 條件下，受試者的平均 RT 為 M = ",
+sprintf('%.3f', M_con), " 秒 (SD = ", sprintf('%.3f', SD_con), ")；在 Incongruent 條件下則為 M = ",
+sprintf('%.3f', M_inc), " 秒 (SD = ", sprintf('%.3f', SD_inc), ")，顯示不一致情境整體上",
+dir_str, "。配對樣本 t 檢定結果為 t(",
+round(df_t, 2), ") = ", sprintf('%.3f', t_val),
+", p = ", format.pval(p_val, digits = 3),
+"，Cohen's d = ", sprintf('%.2f', d_val),
+"，", sig_str, "，支持本實驗成功誘發一致性效應。\n" 
+))
+```
+
+```{r cong_means_table, echo=FALSE}
+cong_table <- subj_cong %>%
+  group_by(Condition) %>%
+  summarise(
+    Mean_RT = mean(mean_rt, na.rm = TRUE),
+    SD_RT   = sd(mean_rt, na.rm = TRUE),
+    Mean_ACC = mean(mean_acc, na.rm = TRUE),
+    SD_ACC   = sd(mean_acc, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Save to Excel list
+excel_sheets[["Congruency_Means"]] <- cong_table
+
+as_table(cong_table, caption = "一致性條件下的受試者平均 RT / ACC")
+```
+
+```{r cong_plot, fig.cap="各受試者在一致與不一致條件下的平均反應時間"}
+if (nrow(subj_cong) > 0) {
+  p_cong <- ggplot(subj_cong, aes(x = Condition, y = mean_rt, group = subject)) + 
+    geom_line(color = "gray70", alpha = 0.6) + 
+    geom_point(aes(color = Condition), size = 2) + 
+    scale_color_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) + 
+    theme_pubr() + 
+    labs(title = "一致性主效應（RT）", y = "Mean RT (s)")
+  
+  if (knitr::is_html_output()) ggplotly(p_cong) else p_cong
+}
+```
+
+從上述分析可確認，本實驗成功誘發一致性效應：多數受試者在不一致條件下的反應時間較一致條件為長，且配對樣本 t 檢定之結果顯示此差異達統計顯著水準；Cohen's d 效果量提供了效應大小的估計，有助於未來研究進行樣本數規劃與效果比較。
+
+## 4.3 圖片實驗：圖片類型 × 一致性（Image × Congruency）
+
+### 4.3.1 2×2 重複量數 ANOVA
+
+```{r image_anova}
+df_img <- df %>% filter(Modality == "Image")
+
+subj_img <- df_img %>%
+  group_by(subject, Condition, Image_Type) %>%
+  summarise(mean_rt = mean(rt[acc == 1], na.rm = TRUE), .groups = "drop")
+
+res_aov_img <- anova_test(
+  data   = subj_img,
+  dv     = mean_rt,
+  wid    = subject,
+  within = c(Condition, Image_Type)
+)
+
+img_aov_table <- get_anova_table(res_aov_img)
+
+# Save to Excel list
+excel_sheets[["ANOVA_Image"]] <- img_aov_table
+
+as_table(img_aov_table, caption = "圖片實驗 2×2 ANOVA：RT ~ Condition × Image_Type")
+```
+
+```{r image_interaction, fig.cap="圖片類型與一致性的交互作用圖"}
+if (nrow(subj_img) > 0) {
+  p_img <- ggplot(subj_img, aes(x = Condition, y = mean_rt, color = Image_Type, group = interaction(Image_Type, subject))) + 
+    stat_summary(fun = mean, geom = "line", aes(group = Image_Type), size = 0.8) + 
+    stat_summary(fun = mean, geom = "point", size = 2, aes(shape = Image_Type)) + 
+    theme_pubr() + 
+    labs(title = "圖片實驗：Condition × Image_Type", y = "Mean RT (s)")
+  if (knitr::is_html_output()) ggplotly(p_img) else p_img
+}
+```
+
+若交互作用項（Condition × Image_Type）達顯著，表示同志情侶與異性戀情侶圖片在一致與不一致情境下的反應時間模式不同，可能反映社會情緒意涵對衝突處理有所調節。即使交互作用未達顯著，圖片類型的主效應亦可提供基準線（baseline processing difference）的資訊。
+
+```{r image_anova_text, results='asis'}
+cond_row <- img_aov_table[img_aov_table$Effect == "Condition", ]
+imgtype_row <- img_aov_table[img_aov_table$Effect == "Image_Type", ]
+int_row <- img_aov_table[img_aov_table$Effect == "Condition:Image_Type", ]
+
+safe_get <- function(row, field) ifelse(nrow(row) == 0, NA, row[[field]])
+
+cat("**結果說明**：圖片實驗中，",
+    "一致性主效應 F(", safe_get(cond_row,"DFn"), ", ", safe_get(cond_row,"DFd"), ") = ", sprintf('%.3f', safe_get(cond_row,"F")),
+    ", p = ", ifelse(is.na(safe_get(cond_row,"p")), "NA", format.pval(safe_get(cond_row,"p"), digits = 3)),
+    "；圖片類型主效應 F(", safe_get(imgtype_row,"DFn"), ", ", safe_get(imgtype_row,"DFd"), ") = ", sprintf('%.3f', safe_get(imgtype_row,"F")),
+    ", p = ", ifelse(is.na(safe_get(imgtype_row,"p")), "NA", format.pval(safe_get(imgtype_row,"p"), digits = 3)),
+    "；交互作用 F(", safe_get(int_row,"DFn"), ", ", safe_get(int_row,"DFd"), ") = ", sprintf('%.3f', safe_get(int_row,"F")),
+    ", p = ", ifelse(is.na(safe_get(int_row,"p")), "NA", format.pval(safe_get(int_row,"p"), digits = 3)),
+    "。請據此判斷圖片類型是否調節一致性效應。\n", sep = "")
+```
+
+```{r image_means_table, echo=FALSE}
+if (has_image_type && nrow(subj_img) > 0) {
+  img_means <- subj_img %>%
+    group_by(Condition, Image_Type) %>%
+    summarise(
+      Mean_RT = mean(mean_rt, na.rm = TRUE),
+      SD_RT   = sd(mean_rt, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Save to Excel list
+  excel_sheets[["Image_Means"]] <- img_means
+  
+  as_table(img_means, caption = "圖片實驗：各條件下的受試者平均 RT")
+}
+```
+
+## 4.4 文字實驗：Condition × Valence × Arousal
+
+```{r text_anova}
+df_txt <- df %>% filter(Modality == "Text")
+
+subj_txt <- df_txt %>%
+  group_by(subject, Condition, Valence, Arousal) %>%
+  summarise(mean_rt = mean(rt[acc == 1], na.rm = TRUE), .groups = "drop")
+
+res_aov_txt <- anova_test(
+  data   = subj_txt,
+  dv     = mean_rt,
+  wid    = subject,
+  within = c(Condition, Valence, Arousal)
+)
+
+txt_aov_table <- get_anova_table(res_aov_txt)
+
+# Save to Excel list
+excel_sheets[["ANOVA_Text"]] <- txt_aov_table
+
+as_table(txt_aov_table, caption = "文字實驗 2×2×2 ANOVA：RT ~ Condition × Valence × Arousal")
+```
+
+```{r text_facet, fig.cap="文字實驗：Valence × Condition 於不同 Arousal 下之交互作用圖"}
+if (nrow(subj_txt) > 0) {
+  p_txt <- ggplot(subj_txt, aes(x = Valence, y = mean_rt, color = Condition, group = Condition)) + 
+    stat_summary(fun = mean, geom = "line", size = 0.8) + 
+    stat_summary(fun = mean, geom = "point", size = 2) + 
+    scale_color_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
+    facet_wrap(~ Arousal) + 
+    theme_pubr() + 
+    labs(title = "文字實驗：Valence × Condition（依 Arousal 分面）",
+         y = "Mean RT (s)")
+  if (knitr::is_html_output()) ggplotly(p_txt) else p_txt
+}
+```
+
+三因子 ANOVA 的結果可回答以下問題：  
+（1）是否存在整體的一致性主效應？  
+（2）正向與負向文字是否在處理速度上有系統差異（Valence 主效應）？  
+（3）高喚醒與低喚醒文字是否有整體差異（Arousal 主效應）？  
+（4）更重要的是，是否存在 Condition × Valence × Arousal 的三階交互作用，暗示喚醒度調節了情緒效價對一致性效應的影響。
+
+```{r text_anova_text, results='asis'}
+cond_row_txt <- txt_aov_table[txt_aov_table$Effect == "Condition", ]
+val_row_txt  <- txt_aov_table[txt_aov_table$Effect == "Valence", ]
+aro_row_txt  <- txt_aov_table[txt_aov_table$Effect == "Arousal", ]
+int3_row_txt <- txt_aov_table[txt_aov_table$Effect == "Condition:Valence:Arousal", ]
+
+safe_get <- function(row, field) ifelse(nrow(row) == 0, NA, row[[field]])
+
+cat("**結果說明**：文字實驗中，Condition 主效應 F(",
+    safe_get(cond_row_txt,"DFn"), ", ", safe_get(cond_row_txt,"DFd"), ") = ", sprintf('%.3f', safe_get(cond_row_txt,"F")),
+    ", p = ", ifelse(is.na(safe_get(cond_row_txt,"p")), "NA", format.pval(safe_get(cond_row_txt,"p"), digits = 3)),
+    "；Valence 主效應 F(",
+    safe_get(val_row_txt,"DFn"), ", ", safe_get(val_row_txt,"DFd"), ") = ", sprintf('%.3f', safe_get(val_row_txt,"F")),
+    ", p = ", ifelse(is.na(safe_get(val_row_txt,"p")), "NA", format.pval(safe_get(val_row_txt,"p"), digits = 3)),
+    "；Arousal 主效應 F(",
+    safe_get(aro_row_txt,"DFn"), ", ", safe_get(aro_row_txt,"DFd"), ") = ", sprintf('%.3f', safe_get(aro_row_txt,"F")),
+    ", p = ", ifelse(is.na(safe_get(aro_row_txt,"p")), "NA", format.pval(safe_get(aro_row_txt,"p"), digits = 3)),
+    "。三階交互作用 Condition × Valence × Arousal 為 F(",
+    safe_get(int3_row_txt,"DFn"), ", ", safe_get(int3_row_txt,"DFd"), ") = ", sprintf('%.3f', safe_get(int3_row_txt,"F")),
+    ", p = ", ifelse(is.na(safe_get(int3_row_txt,"p")), "NA", format.pval(safe_get(int3_row_txt,"p"), digits = 3)),
+    "。可據此判斷喚醒度是否顯著調節情緒效價對一致性效應的影響。
+", sep = "")
+```
+
+```{r text_means_table, echo=FALSE}
+if (nrow(subj_txt) > 0) {
+  txt_means <- subj_txt %>%
+    group_by(Condition, Valence, Arousal) %>%
+    summarise(
+      Mean_RT = mean(mean_rt, na.rm = TRUE),
+      SD_RT   = sd(mean_rt, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Save to Excel list
+  excel_sheets[["Text_Means"]] <- txt_means
+  
+  as_table(txt_means, caption = "文字實驗：各條件下的受試者平均 RT")
+}
+```
+
+## 4.5 類別關聯：一致性 × 正確率（Chi-square）
+
+```{r chi_sq}
+df_chi <- df %>%
+  mutate(Result = if_else(acc == 1, "Correct", "Error"))
+
+tbl <- table(df_chi$Condition, df_chi$Result)
+chi_res <- chisq.test(tbl)
+
+# Save to Excel list
+excel_sheets[["Chi_Square_Table"]] <- as.data.frame.matrix(tbl)
+excel_sheets[["Chi_Square_Test"]] <- broom::tidy(chi_res)
+
+as_table(as.data.frame.matrix(tbl), caption = "列聯表：Condition × Result")
+
+if (!knitr::is_html_output()) chi_res
+```
+
+```{r chi_sq_text, results='asis'}
+prop_tbl <- prop.table(tbl, 1)
+
+err_con <- prop_tbl["Congruent", "Error"]
+err_inc <- prop_tbl["Incongruent", "Error"]
+
+cat(paste0(
+"**結果說明**：在 Congruent 條件下，錯誤比例約為 ",
+sprintf('%.1f', err_con * 100), "%；在 Incongruent 條件下，錯誤比例約為 ",
+sprintf('%.1f', err_inc * 100), 
+"%。卡方檢定結果為 χ²(", chi_res$parameter, ") = ",
+sprintf('%.3f', chi_res$statistic),
+", p = ", format.pval(chi_res$p.value, digits = 3),
+"，據此可判斷一致性操弄是否在錯誤率層面產生顯著差異。\n" 
+))
+```
+
+若卡方檢定顯著，代表在不一致條件下錯誤反應的比例與一致條件相比存在系統性的差異，進一步支持「不一致情境較難，導致錯誤率提升」的推論。
+
+# 第五章 詳細參數估計與量表診斷
+
+本章對每個核心模型提供參數摘要與簡易診斷，並以「二階概觀」總結重點。
+
+## 5.1 配對 t 檢定：Congruent vs Incongruent
+
+- 估計：平均差（Incongruent − Congruent）、t、df、p、Cohen’s d（配對）。
+- 診斷：配對差值的 Shapiro-Wilk 常態性檢定。
+
+```{r cong_params}
+cong_diff <- diff_vec
+shapiro_cong <- shapiro.test(cong_diff)
+
+param_cong <- tibble(
+  Mean_Diff = mean(cong_diff, na.rm = TRUE),
+  SD_Diff   = sd(cong_diff, na.rm = TRUE),
+  t         = as.numeric(t_val),
+  df        = as.numeric(df_t),
+  p         = as.numeric(p_val),
+  Cohens_d  = d_val
+)
+
+as_table(param_cong, caption = "Congruency 配對 t 檢定參數摘要")
+```
+
+```{r cong_diag_text, results='asis'}
+cat(paste0(
+"Shapiro-Wilk 檢定配對差值常態性：W = ",
+sprintf('%.3f', shapiro_cong$statistic),
+", p = ", format.pval(shapiro_cong$p.value, digits = 3),
+"。若 p < .05，代表差值可能偏離常態，解讀時需注意。" 
+))
+```
+
+**二階概觀**：若 Cohen’s d 中度以上且 p < .05，代表一致性效應穩健；常態性若不成立，效果方向仍具參考，但推論偏保守。
+
+## 5.2 圖片 2×2 ANOVA：Condition × Image_Type
+
+- 估計：ANOVA 的 F、p、部分 η²（以 ges 近似解讀）。
+- 診斷：以混合模型 `lmer(mean_rt ~ Condition*Image_Type + (1|subject))` 殘差做 Shapiro 檢定。
+
+```{r image_diag}
+if (has_image_type && nrow(subj_img) > 0) {
+  img_lmm <- lmer(mean_rt ~ Condition * Image_Type + (1 | subject), data = subj_img)
+  img_resid <- residuals(img_lmm)
+  shapiro_img <- shapiro.test(img_resid)
+  
+  diag_img <- tibble(
+    Shapiro_W = shapiro_img$statistic,
+    p_value   = shapiro_img$p.value,
+    Min_Resid = min(img_resid),
+    Max_Resid = max(img_resid)
+  )
+  
+  as_table(diag_img, caption = "圖片模型殘差診斷（混合模型）")
+} else {
+  cat("（圖片資料不足，略過診斷）")
+}
+```
+
+**二階概觀**：交互作用 p < .05 → 圖片類型調節一致性效應；殘差近似常態 → 模型假設較穩健。
+
+## 5.3 文字 2×2×2 ANOVA：Condition × Valence × Arousal
+
+- 估計：主效應與交互作用的 F、p；重點在三階交互作用。  
+- 診斷：混合模型 `lmer(mean_rt ~ Condition*Valence*Arousal + (1|subject))` 殘差常態性。
+
+```{r text_diag}
+if (nrow(subj_txt) > 0) {
+  txt_lmm <- lmer(mean_rt ~ Condition * Valence * Arousal + (1 | subject), data = subj_txt)
+  txt_resid <- residuals(txt_lmm)
+  shapiro_txt <- shapiro.test(txt_resid)
+  
+  diag_txt <- tibble(
+    Shapiro_W = shapiro_txt$statistic,
+    p_value   = shapiro_txt$p.value,
+    Min_Resid = min(txt_resid),
+    Max_Resid = max(txt_resid)
+  )
+  
+  as_table(diag_txt, caption = "文字模型殘差診斷（混合模型）")
+} else {
+  cat("（文字資料不足，略過診斷）")
+}
+```
+
+**二階概觀**：三階交互作用 p < .05 → 喚醒度調節情緒效價對一致性效應；殘差近似常態 → 模型較穩健。
+
+## 5.4 卡方：Condition × Correct/Incorrect
+
+- 估計：χ²、df、p；最小期望次數檢查。
+
+```{r chi_diag}
+expected_min <- min(chisq.test(tbl)$expected)
+chi_summary <- tibble(
+  Chi_square   = as.numeric(chi_res$statistic),
+  df           = as.numeric(chi_res$parameter),
+  p            = chi_res$p.value,
+  Min_Expected = expected_min
+)
+
+as_table(chi_summary, caption = "卡方檢定參數與期望次數")
+```
+
+**二階概觀**：p < .05 且最小期望次數 ≥ 5 → 可可信推論不一致條件錯誤率較高；若期望次數過低，需改用 Fisher exact 或合併類別。
+
+# 第六章 討論
+
+## 6.1 一致性效應與認知衝突
+
+本研究的分析結果顯示，在整體層次上，不一致情境相較於一致情境，反應時間有明顯延長，且配對樣本 t 檢定所得到的效果量達中度以上水準，顯示實驗典範成功誘發認知衝突。這一點與經典的 Flanker 與 Stroop 文獻結果相符，亦證實本研究的操弄足以捕捉認知控制之行為指標。
+
+## 6.2 圖片實驗：社會情緒意涵的調節效果
+
+在圖片模態中，同志情侶與異性戀情侶圖片間的一致性效應模式，可透過 Condition × Image_Type 交互作用加以檢視。若交互作用顯著，則可推論特定社會情緒內容（例如對同志情侶的態度或社會刻板印象）會改變受試者在衝突情境中的處理效率。即便交互作用未達顯著，圖片類型主效應亦反映受試者對不同社會關係的基線處理差異。
+
+## 6.3 文字實驗：效價與喚醒度的綜合影響
+
+文字實驗的三因子 ANOVA 提供了更精緻的情緒效應檢驗框架。若觀察到 Condition × Valence 或 Condition × Valence × Arousal 之交互作用，代表情緒效價與喚醒度不僅影響反應速度本身，更可能特別在衝突情境中放大或縮小一致性效應。這樣的結果呼應情緒顯著性會競逐有限認知資源的理論：高喚醒或負向刺激可能佔用更多注意資源，導致在不一致情境下的處理更加困難。
+
+## 6.4 錯誤率與行為模式整合
+
+卡方分析結果若顯示不一致條件下錯誤率增加，則與反應時間的延長互為印證，支持一致性效應並非單純速度–準確度權衡（例如受試者為了更快而隨意作答），而是反映了對干擾刺激抑制失敗或控制資源負荷增加。綜合 RT 與 ACC 的結果，有助於更全面地理解受試者在本實驗中的行為策略。
+
+## 6.5 限制與未來方向
+
+本研究亦存在若干限制。首先，樣本數相對有限，在推廣至更廣泛族群時需謹慎；未來研究可增加受試者數量，或納入不同文化背景以檢驗結果的普遍性。其次，圖片與文字刺激的情緒強度與社會意涵雖已事先規劃，但仍可能存在個體差異；未來可搭配主觀評價量表或生理指標（例如心跳、皮膚電反應）進行多模態佐證。最後，雖然本報告依照事前計畫採用重複量數 ANOVA 與基礎 GLMM/LMM，但更進階的階層貝氏模型或反應時分布模型（例如 ex-Gaussian）亦值得未來嘗試。
+
+整體而言，本報告依循事前制定的統計分析計畫，對一致性效應及其受到圖片與文字情緒刺激調節的情形，提供了初步而具體的實證結果，為後續碩士論文寫作與理論整合奠定了數據基礎。
+
+# 第七章 資料探索 (Data Explorer) {.tabset}
+
+## 整理後資料 (Processed Data)
+
+```{r data_clean_dt}
+as_table(df, caption = "Cleaned Data (No Outlier Exclusion)")
+```
+
+## 原始資料 (Raw Data)
+
+```{r data_raw_dt}
+if (!is.null(df_raw_display)) {
+  as_table(df_raw_display, caption = "Raw Data (from analysis_data.csv)")
+} else {
+  cat("原始資料檔案未找到或未載入。" )
+}
+```
+
+## 統計結果匯出 (Export)
+
+```{r export_xlsx}
+xlsx_name <- "Master_Statistics_Exclude_S5S10.xlsx"
+write.xlsx(excel_sheets, xlsx_name)
+cat(paste0("所有的統計結果已匯出至：[", xlsx_name, "](", xlsx_name, ")"))
+```

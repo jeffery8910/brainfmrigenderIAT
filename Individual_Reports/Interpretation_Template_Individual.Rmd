@@ -1,0 +1,131 @@
+---
+title: "結果解讀報告"
+output:
+  html_document:
+    theme: flatly
+    css: style.css
+params:
+  subject_id: "S001"
+  xlsx_path: "Full_Stats_S001.xlsx"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(openxlsx)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+# Load Data
+xlsx_file <- params$xlsx_path
+subj <- params$subject_id
+
+if(!file.exists(xlsx_file)) {
+  stop(paste("找不到檔案:", xlsx_file))
+}
+
+# Read Sheets
+res_ttest <- tryCatch(read.xlsx(xlsx_file, sheet = "T_Test_Results"), error = function(e) NULL)
+sum_acc   <- tryCatch(read.xlsx(xlsx_file, sheet = "Summary_Accuracy"), error = function(e) NULL)
+sum_rt    <- tryCatch(read.xlsx(xlsx_file, sheet = "Summary_RT"), error = function(e) NULL)
+
+# Helper function for text
+get_sig_text <- function(p) {
+  if(is.na(p)) return("無法計算")
+  if(p < 0.001) return("極達顯著 (p < .001)")
+  if(p < 0.01) return("非常顯著 (p < .01)")
+  if(p < 0.05) return("達顯著 (p < .05)")
+  if(p < 0.1) return("邊緣顯著 (p < .10)")
+  return("未達顯著 (p > .05)")
+}
+```
+
+<style>
+.interpretation-card {
+    background-color: #f8f9fa;
+    border-left: 5px solid #007bff;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 5px;
+}
+.verdict-sig { color: #dc3545; font-weight: bold; }
+.verdict-nonsig { color: #6c757d; font-weight: bold; }
+.back-btn {
+    margin-top: 20px;
+    padding: 10px 20px;
+    background-color: #6c757d;
+    color: white;
+    text-decoration: none;
+    border-radius: 5px;
+    display: inline-block;
+}
+.back-btn:hover { background-color: #5a6268; color: white; }
+</style>
+
+# 受試者 `r subj` 結果深度解讀
+
+本頁面針對受試者 `r subj` 的行為數據進行統計檢定結果的文字化解讀。數據來源為先前自動分析生成的統計報表。
+
+---
+
+## 1. 一致性效應分析 (T-test Analysis)
+
+以下分析針對「不一致 (Incongruent)」與「一致 (Congruent)」情境下的反應時間進行配對樣本 t 檢定。
+
+```{r ttest_interp, results='asis'}
+if(!is.null(res_ttest)) {
+  for(i in 1:nrow(res_ttest)) {
+    row <- res_ttest[i, ]
+    mod <- row$Modality
+    p_val <- row$p
+    stat <- row$statistic
+    df_val <- row$df
+    
+    sig_txt <- get_sig_text(p_val)
+    color_class <- ifelse(p_val < 0.05, "verdict-sig", "verdict-nonsig")
+    
+    # Determine direction based on statistic (positive t usually means group1 > group2, need to check levels)
+    # Assuming standard t_test(rt ~ Condition) where Incongruent is usually compared against Congruent
+    # But let's look at the means in Summary_RT to be sure.
+    
+    mean_con <- sum_rt %>% filter(Modality == mod, Condition == "Congruent") %>% pull(mean)
+    mean_inc <- sum_rt %>% filter(Modality == mod, Condition == "Incongruent") %>% pull(mean)
+    
+    diff <- mean_inc - mean_con
+    direction <- ifelse(diff > 0, "變慢 (Stroop Effect)", "變快 (Reverse Effect)")
+    
+    cat(paste0("<div class='interpretation-card'>"))
+    cat(paste0("<h3>", mod, " 模態</h3>"))
+    cat(paste0("<p>在 ", mod, " 刺激呈現下，不一致情境的平均反應時間為 <strong>", round(mean_inc, 3), "s</strong>，"))
+    cat(paste0("一致情境則為 <strong>", round(mean_con, 3), "s</strong>。</p>"))
+    
+    cat(paste0("<p>統計檢定結果顯示此差異 <span class='", color_class, "'>", sig_txt, "</span> "))
+    cat(paste0("(t(", df_val, ") = ", round(stat, 3), ")。</p>"))
+    
+    if(p_val < 0.05) {
+      cat(paste0("<p><strong>結論：</strong> 受試者在處理衝突資訊時反應時間顯著", direction, "，顯示", ifelse(diff>0, "存在", "存在反向"), "一致性效應。</p>"))
+    } else {
+      cat(paste0("<p><strong>結論：</strong> 受試者在此模態下未表現出統計上顯著的一致性效應。</p>"))
+    }
+    cat("</div>")
+  }
+} else {
+  cat("<div class='alert alert-warning'>無法讀取 T 檢定資料。</div>")
+}
+```
+
+## 2. 準確度概況 (Accuracy Overview)
+
+```{r acc_interp, results='asis'}
+if(!is.null(sum_acc)) {
+  cat("<table class='table table-striped'><thead><tr><th>模態</th><th>條件</th><th>正確題數</th><th>總題數</th><th>正確率</th></tr></thead><tbody>")
+  for(i in 1:nrow(sum_acc)) {
+    r <- sum_acc[i, ]
+    cat(paste0("<tr><td>", r$Modality, "</td><td>", r$Condition, "</td><td>", r$Correct, "</td><td>", r$Total, "</td><td><strong>", r$Acc_Pct, "</strong></td></tr>"))
+  }
+  cat("</tbody></table>")
+}
+```
+
+<br>
+<a href="../../index.html" class="back-btn">返回首頁</a>

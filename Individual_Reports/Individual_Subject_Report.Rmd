@@ -1,0 +1,199 @@
+---
+title: "Individual Subject Report"
+output:
+  html_document:
+    toc: true
+    theme: flatly
+    code_folding: hide
+    df_print: paged
+params:
+  subject_id: "S1"
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, dev = "png", dpi = 150, fig.width = 7, fig.height = 4.5, out.width = "100%", fig.align = "center")
+
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(knitr)
+library(kableExtra)
+library(plotly)
+library(DT)
+
+# Path to data
+data_path_clean  <- file.path("..","..","..","Statistical_Analysis_Implementation","cleaned_trial_level_data.csv")
+
+if (!file.exists(data_path_clean)) {
+  stop("Data file not found: ", data_path_clean)
+}
+
+df_full <- read.csv(data_path_clean)
+
+# Filter Subject
+subj_id <- params$subject_id
+df <- df_full %>% filter(subject == subj_id)
+
+if(nrow(df) == 0){
+  stop(paste("No data for subject", subj_id))
+}
+
+# Factors
+df <- df %>%
+  mutate(
+    Condition = factor(Condition),
+    Modality  = factor(Modality),
+    Valence   = factor(Valence),
+    Arousal   = factor(Arousal),
+    acc_label = ifelse(acc == 1, "Correct", "Error")
+  )
+
+if ("Image_Type" %in% names(df)) df$Image_Type <- factor(df$Image_Type)
+
+# Helper
+as_table <- function(.data, caption = "") {
+  DT::datatable(.data, options = list(pageLength = 10, scrollX = TRUE), caption = caption)
+}
+
+# Interpret P
+interpret_p <- function(p_val) {
+  if (is.na(p_val)) return("N/A")
+  if (p_val < 0.001) return("Extreme (p < .001)")
+  if (p_val < 0.01) return("Very Sig (p < .01)")
+  if (p_val < 0.05) return("Sig (p < .05)")
+  if (p_val < 0.1) return("Marginal (p < .10)")
+  return("Not Sig (p > .05)")
+}
+```
+
+```{r info, results='asis'}
+cat(paste0("**Report Date:** ", format(Sys.time(), "%Y-%m-%d"), "\n\n"))
+cat(paste0("**Subject:** ", subj_id, "\n\n"))
+cat(paste0("**Total Trials:** ", nrow(df), "\n\n"))
+```
+
+# 1. Overview and Dashboard {.tabset}
+
+## RT Distribution
+
+```{r rt_dist}
+p_dist <- df %>%
+  filter(!is.na(rt)) %>%
+  ggplot(aes(x = Condition, y = rt, fill = Condition)) +
+  geom_violin(alpha = 0.3) +
+  geom_jitter(width = 0.2, alpha = 0.5, size = 1) +
+  facet_wrap(~Modality) +
+  theme_pubr() +
+  labs(title = paste0("RT Distribution: ", subj_id), y = "RT (s)") +
+  theme(legend.position = "bottom")
+
+ggplotly(p_dist)
+```
+
+## Trial History
+
+```{r rt_trend}
+df <- df %>%
+  mutate(Trial_Order = row_number())
+
+p_trend <- df %>%
+  ggplot(aes(x = Trial_Order, y = rt, color = Condition)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE, size = 0.5, alpha = 0.3) +
+  facet_grid(Modality ~ .) +
+  theme_pubr() +
+  labs(title = "Reaction Time Across Trials", x = "Trial Order", y = "RT (s)")
+
+ggplotly(p_trend)
+```
+
+# 2. Summary Statistics {.tabset}
+
+## RT
+
+```{r stats_rt}
+sum_rt <- df %>%
+  group_by(Modality, Condition) %>%
+  get_summary_stats(rt, type = "mean_sd")
+
+as_table(sum_rt, caption = "RT Summary")
+```
+
+## Accuracy
+
+```{r stats_acc}
+sum_acc <- df %>%
+  group_by(Modality, Condition) %>%
+  summarise(
+    Total = n(),
+    Correct = sum(acc == 1, na.rm = TRUE),
+    Accuracy = mean(acc, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(Accuracy_Pct = paste0(round(Accuracy * 100, 1), "%"))
+
+as_table(sum_acc, caption = "Accuracy Summary")
+```
+
+# 3. Analysis {.tabset}
+
+```{r ttest_calc}
+# T-test
+stat_res <- df %>%
+  filter(!is.na(rt), acc == 1) %>%
+  group_by(Modality) %>%
+  t_test(rt ~ Condition) %>%
+  add_significance()
+
+# Export CSV
+csv_name <- paste0("ttest_", subj_id, ".csv")
+write.csv(stat_res, csv_name, row.names = FALSE)
+```
+
+## Stats Table
+
+```{r ttest_tbl}
+as_table(stat_res, caption = "T-test Results")
+```
+
+## Interpretation
+
+```{r ttest_text, results='asis'}
+cat("### Interpretation\n\n")
+
+for(i in 1:nrow(stat_res)) {
+  row <- stat_res[i, ]
+  mod <- row$Modality
+  p_str <- interpret_p(row$p)
+  
+  means <- df %>%
+    filter(Modality == mod, !is.na(rt), acc == 1) %>%
+    group_by(Condition) %>%
+    summarise(m = mean(rt), .groups="drop")
+  
+  m_con <- means$m[means$Condition == "Congruent"]
+  m_inc <- means$m[means$Condition == "Incongruent"]
+  diff <- m_inc - m_con
+  dir_str <- ifelse(diff > 0, "Slower (Stroop-like)", "Faster (Reverse)")
+  
+  cat(paste0("#### ", mod, " Modality\n"))
+  cat(paste0("- **Result**: ", p_str, "\n"))
+  cat(paste0("- **Stats**: t(", row$df, ") = ", sprintf("%.3f", row$statistic), ", p = ", format.pval(row$p, digits=3), "\n"))
+  cat(paste0("- **Direction**: Incongruent is ", dir_str, " (Diff = ", sprintf("%.3f", diff), "s).\n\n"))
+  cat("---\n")
+}
+```
+
+## Download CSV
+
+```{r csv_show}
+read_csv_back <- read.csv(csv_name)
+DT::datatable(read_csv_back, caption = paste0("Exported File: ", csv_name))
+```
+
+# 4. Raw Data
+
+```{r raw_data}
+as_table(df, caption = paste0("Raw Data for ", subj_id))
+```

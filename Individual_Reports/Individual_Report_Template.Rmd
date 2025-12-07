@@ -1,0 +1,195 @@
+---
+title: "Individual Subject Report"
+author: "Automated Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, dev = "png", dpi = 150, fig.width = 7, fig.height = 4.5, out.width = "100%", fig.align = "center")
+
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(knitr)
+library(kableExtra)
+library(plotly)
+library(DT)
+library(openxlsx)
+
+# Manually handle params since we removed them from YAML to fix Pandoc error
+if(!exists("params")) {
+  params <- list(subject_id = "S001")
+}
+
+# Path
+data_path_clean  <- file.path("..","..","..","Statistical_Analysis_Implementation","cleaned_trial_level_data.csv")
+df_full <- read.csv(data_path_clean)
+subj_id <- params$subject_id
+df <- df_full %>% filter(subject == subj_id)
+
+if(nrow(df) > 0) {
+  df <- df %>%
+    mutate(
+      Condition = factor(condition),
+      Modality  = factor(Modality),
+      Valence   = factor(Valence),
+      Arousal   = factor(Arousal),
+      acc_label = ifelse(acc == 1, "正確", "錯誤")
+    )
+  if ("Image_Type" %in% names(df)) df$Image_Type <- factor(df$Image_Type)
+}
+
+excel_sheets <- list()
+if(nrow(df) > 0) excel_sheets[["Raw_Data"]] <- df
+
+as_table <- function(.data, caption = "") {
+  DT::datatable(.data, options = list(pageLength = 10, scrollX = TRUE, language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Chinese-traditional.json')), caption = caption)
+}
+
+interpret_p <- function(p_val) {
+  if (is.na(p_val)) return("無法計算 (N/A)")
+  if (p_val < 0.001) return("極達顯著 (p < .001)")
+  if (p_val < 0.01) return("非常顯著 (p < .01)")
+  if (p_val < 0.05) return("達顯著 (p < .05)")
+  if (p_val < 0.1) return("邊緣顯著 (p < .10)")
+  return("未達顯著 (p > .05)")
+}
+```
+
+# 受試者報告: `r subj_id`
+
+**建立日期:** `r format(Sys.time(), "%Y-%m-%d")`
+
+# 1. 資料概覽 (Overview) {.tabset}
+
+## 反應時間分布
+
+```{r rt_dist}
+if(nrow(df) > 0 && any(!is.na(df$rt))) {
+  p <- df %>%
+    filter(!is.na(rt)) %>%
+    ggplot(aes(x = Condition, y = rt, fill = Condition)) +
+    geom_violin(alpha = 0.3) +
+    geom_jitter(width = 0.2, alpha = 0.5, size = 1) +
+    scale_fill_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
+    facet_wrap(~Modality) +
+    theme_pubr() +
+    labs(y = "反應時間 (秒)", title = "反應時間分布圖") +
+    theme(legend.position = "bottom")
+  ggplotly(p)
+}
+```
+
+## 逐題反應歷程
+
+```{r rt_trend}
+if(nrow(df) > 0 && any(!is.na(df$rt))) {
+  df_t <- df %>% mutate(Order = row_number())
+  p <- df_t %>%
+    ggplot(aes(x = Order, y = rt, color = Condition)) +
+    geom_point(alpha = 0.5) +
+    scale_color_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
+    theme_pubr() +
+    labs(x = "試驗順序 (Trial)", y = "反應時間 (秒)", title = "逐題反應趨勢")
+  ggplotly(p)
+}
+```
+
+# 2. 統計摘要 (Statistics) {.tabset}
+
+## 反應時間摘要
+
+```{r stats_tbl}
+if(nrow(df) > 0) {
+  sum_rt <- df %>%
+    group_by(Modality, Condition) %>%
+    get_summary_stats(rt, type = "mean_sd")
+  
+  excel_sheets[["Summary_RT"]] <- sum_rt
+  as_table(sum_rt, caption = "反應時間摘要統計量")
+}
+```
+
+## 正確率摘要
+
+```{r acc_tbl}
+if(nrow(df) > 0) {
+  sum_acc <- df %>%
+    group_by(Modality, Condition) %>%
+    summarise(
+      Total = n(),
+      Correct = sum(acc == 1, na.rm = TRUE),
+      Acc = mean(acc, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(Acc_Pct = paste0(round(Acc * 100, 1), "%"))
+  
+  excel_sheets[["Summary_Accuracy"]] <- sum_acc
+  as_table(sum_acc, caption = "正確率統計")
+}
+```
+
+# 3. 統計檢定與解讀 (Analysis) {.tabset}
+
+```{r ttest_calc}
+res <- NULL
+if(nrow(df) > 0) {
+  df_c <- df %>% filter(!is.na(rt), acc == 1)
+  if(nrow(df_c) > 5) {
+    res <- df_c %>% group_by(Modality) %>% t_test(rt ~ Condition) %>% add_significance()
+    excel_sheets[["T_Test_Results"]] <- res
+  }
+}
+```
+
+## 檢定結果表格
+
+```{r}
+if(!is.null(res)) as_table(res, caption = "配對樣本 T 檢定結果")
+```
+
+## 自動化解讀
+
+```{r, results='asis'}
+if(!is.null(res)) {
+  cat("### 統計結果摘要\n\n")
+  for(i in 1:nrow(res)) {
+    row <- res[i, ]
+    mod <- row$Modality
+    p_txt <- interpret_p(row$p)
+    
+    means <- df %>%
+      filter(Modality == mod, !is.na(rt), acc == 1) %>%
+      group_by(Condition) %>%
+      summarise(m = mean(rt), .groups="drop")
+    
+    m_con <- means$m[means$Condition == "Congruent"]
+    m_inc <- means$m[means$Condition == "Incongruent"]
+    diff <- m_inc - m_con
+    
+    dir_str <- ifelse(diff > 0, "變慢 (典型一致性效應)", "變快 (反向效應)")
+    
+    cat(paste0("#### ", mod, " 模態\n"))
+    cat(paste0("- **顯著性判斷**: ", p_txt, "\n"))
+    cat(paste0("- **統計數值**: t(", row$df, ") = ", sprintf("%.3f", row$statistic), ", p = ", format.pval(row$p, digits=3), "\n"))
+    cat(paste0("- **效應方向**: 不一致情境相較於一致情境反應時間 **", dir_str, "** (平均差 = ", sprintf("%.3f", diff), " 秒)。\n\n"))
+    cat("---\n")
+  }
+}
+```
+
+## 資料匯出
+
+```{r export_xlsx}
+xlsx_name <- paste0("Full_Stats_", subj_id, ".xlsx")
+if(length(excel_sheets) > 0) {
+  write.xlsx(excel_sheets, xlsx_name)
+  cat(paste0("已匯出 Excel: [", xlsx_name, "](", xlsx_name, ")"))
+}
+```
+
+# 4. 原始資料 (Raw Data)
+
+```{r raw}
+as_table(df, caption = "受試者原始資料表")
+```

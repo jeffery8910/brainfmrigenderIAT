@@ -1,0 +1,5 @@
+"Modality","Condition","variable","n","mean","sd"
+"Image","Congruent","rt",22,1.075,0.25
+"Image","Incongruent","rt",21,0.848,0.171
+"Text","Congruent","rt",8,1.083,0.208
+"Text","Incongruent","rt",20,1.103,0.225
