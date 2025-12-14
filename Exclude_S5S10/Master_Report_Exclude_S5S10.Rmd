@@ -1,7 +1,7 @@
 ---
 title: "一致性與情緒刺激之行為數據分析（排除 S5 / S10 版本）"
 subtitle: "移除受試者 S5、S10 之後的完整分析"
-author: "（請填入作者姓名）"
+author: "組員劉鎮臺編寫報告"
 date: "`r format(Sys.Date())`"
 output:
   html_document:
@@ -9,11 +9,12 @@ output:
     toc_depth: 3
     theme: flatly
     code_folding: hide
+    fig_caption: false
     df_print: paged
   word_document:
     toc: true
     toc_depth: 3
-    fig_caption: true
+    fig_caption: false
     highlight: tango
     df_print: kable
 always_allow_html: true
@@ -54,6 +55,9 @@ excel_sheets <- list()
 data_path_raw <- file.path("..","..","..","Thesis_Analysis_Output","analysis_data.csv")
 
 exclude_ids <- c("S5", "S05", "S005", "S10", "S010")
+missing_as_error_param <- FALSE
+keep_outliers_param <- FALSE
+scenario_title <- "排除 S5 / S10"
 
 if (file.exists(data_path_raw)) {
   df_raw <- read.csv(data_path_raw, stringsAsFactors = FALSE)
@@ -97,6 +101,45 @@ as_table <- function(.data, caption = "") {
     kable(.data, digits = 3, caption = caption) %>%
       kable_styling(full_width = FALSE)
   }
+}
+
+# IAT 樣式 D 分數計算（以 Congruent vs Incongruent 為相容/不相容）
+compute_iat_scores <- function(dat, rt_min_trim = 0.3, rt_max_trim = 10, err_penalty = 0.6) {
+  dat %>%
+    filter(Condition %in% c("Congruent", "Incongruent")) %>%
+    filter(rt >= rt_min_trim, rt <= rt_max_trim) %>%
+    mutate(rt_adj = ifelse(acc == 1, rt, rt + err_penalty)) %>%
+    group_by(subject) %>%
+    summarise(
+      mean_cong  = mean(rt_adj[Condition == "Congruent"], na.rm = TRUE),
+      mean_incong = mean(rt_adj[Condition == "Incongruent"], na.rm = TRUE),
+      sd_pool    = sd(rt_adj, na.rm = TRUE),
+      n_cong     = sum(Condition == "Congruent"),
+      n_incong   = sum(Condition == "Incongruent"),
+      .groups    = "drop"
+    ) %>%
+    mutate(D = (mean_incong - mean_cong) / sd_pool) %>%
+    filter(!is.na(D), is.finite(D))
+}
+
+# 分模態 IAT 樣式 D 分數
+compute_iat_scores_by_modality <- function(dat, rt_min_trim = 0.3, rt_max_trim = 10, err_penalty = 0.6) {
+  dat %>%
+    filter(Condition %in% c("Congruent", "Incongruent")) %>%
+    filter(!is.na(Modality)) %>%
+    filter(rt >= rt_min_trim, rt <= rt_max_trim) %>%
+    mutate(rt_adj = ifelse(acc == 1, rt, rt + err_penalty)) %>%
+    group_by(subject, Modality) %>%
+    summarise(
+      mean_cong   = mean(rt_adj[Condition == "Congruent"], na.rm = TRUE),
+      mean_incong = mean(rt_adj[Condition == "Incongruent"], na.rm = TRUE),
+      sd_pool     = sd(rt_adj, na.rm = TRUE),
+      n_cong      = sum(Condition == "Congruent"),
+      n_incong    = sum(Condition == "Incongruent"),
+      .groups     = "drop"
+    ) %>%
+    mutate(D = (mean_incong - mean_cong) / sd_pool) %>%
+    filter(!is.na(D), is.finite(D))
 }
 ```
 
@@ -174,6 +217,381 @@ as_table(trial_counts, caption = "各模態 × 一致性條件的有效試驗數
 
 所有分析皆以顯著水準 α = .05 為主，必要時輔以效果量（例如 Cohen's d、部分 η²）與信賴區間進行解讀。
 
+## 2.4 行為資料快速視覺化（情境對齊；互動式）
+
+```{r behavior_overview_scenario}
+if (!exists("data_path_raw") || !file.exists(data_path_raw)) {
+  cat("（找不到 analysis_data.csv，無法繪製行為圖。）")
+} else {
+  raw_all <- read.csv(data_path_raw, stringsAsFactors = FALSE) %>%
+    mutate(
+      rt = suppressWarnings(as.numeric(rt)),
+      acc = suppressWarnings(as.numeric(acc))
+    )
+  
+  trials_all <- raw_all %>% filter(is.na(event) | event == "")
+  
+  # 排除受試者（情境）
+  if (length(exclude_ids) > 0) {
+    trials_all <- trials_all %>% filter(!subject %in% exclude_ids)
+  }
+  
+  trials_all <- trials_all %>%
+    mutate(
+      subject = factor(subject),
+      condition = factor(condition, levels = c("Congruent", "Incongruent")),
+      Modality = factor(Modality, levels = c("Image", "Text")),
+      acc_used = if (missing_as_error_param) ifelse(is.na(acc), 0, acc) else acc
+    )
+  
+  # 套用 outlier / RT 範圍規則（情境）
+  trials_used <- trials_all
+  if (!keep_outliers_param) {
+    if (missing_as_error_param) {
+      trials_used <- trials_used %>% filter(is.na(rt) | (rt >= rt_min & rt <= rt_max))
+    } else {
+      trials_used <- trials_used %>% filter(!is.na(rt), !is.na(acc_used), rt >= rt_min, rt <= rt_max)
+    }
+  } else {
+    if (!missing_as_error_param) {
+      trials_used <- trials_used %>% filter(!is.na(rt), !is.na(acc_used))
+    }
+  }
+  
+  per_subj <- trials_all %>%
+    group_by(subject) %>%
+    summarise(
+      Trials_Stored = n(),
+      Practice_Stored = sum(str_detect(block_type, "練習"), na.rm = TRUE),
+      Formal_Stored = sum(str_detect(block_type, "正式"), na.rm = TRUE),
+      Missing_RT_Stored = sum(is.na(rt)),
+      .groups = "drop"
+    )
+  
+  sum_tbl <- tibble(
+    Scenario = scenario_title,
+    Subjects = n_distinct(trials_all$subject),
+    Trials_Stored = nrow(trials_all),
+    Trials_Used = nrow(trials_used),
+    Keep_Outliers = keep_outliers_param,
+    Missing_As_Error = missing_as_error_param
+  )
+  
+  out <- list(
+    as_table(sum_tbl, caption = "資料摘要（Stored vs Used；已套用情境規則）"),
+    as_table(per_subj, caption = "每位受試者 Stored 試次摘要（應為 120；含練習/正式）"),
+    htmltools::HTML("<p><small>說明：本段圖表以 analysis_data.csv 的 trial 列為基礎，並依本情境套用排除受試者／漏答視為錯誤／RT 範圍或保留離群值規則。</small></p>")
+  )
+
+  scenario_id <- if (keep_outliers_param) {
+    if (missing_as_error_param) {
+      "NoOutlier_MissingAsError"
+    } else if (length(exclude_ids) > 0) {
+      "NoOutlier_Exclude_S5S10"
+    } else {
+      "NoOutlier_Base"
+    }
+  } else {
+    if (missing_as_error_param) {
+      "MissingAsError"
+    } else if (length(exclude_ids) > 0) {
+      "Exclude_S5S10"
+    } else {
+      "Base"
+    }
+  }
+  
+  # 1) Accuracy：Condition × Modality
+  acc_sum <- trials_used %>%
+    group_by(condition, Modality) %>%
+    summarise(acc_mean = mean(acc_used, na.rm = TRUE), n = n(), .groups = "drop")
+  
+  p_acc <- plotly::plot_ly(
+    acc_sum,
+    x = ~condition,
+    y = ~acc_mean,
+    color = ~Modality,
+    type = "bar",
+    text = ~sprintf("n=%d<br>ACC=%.1f%%", n, acc_mean * 100),
+    hoverinfo = "text"
+  ) %>%
+    plotly::layout(
+      title = "Accuracy: Condition × Modality",
+      barmode = "group",
+      yaxis = list(title = "Accuracy", tickformat = ".0%", range = c(0, 1)),
+      xaxis = list(title = "Condition")
+    )
+  out <- append(out, list(p_acc))
+  
+  # 2) RT 分布（violin；依 Modality 分兩圖）
+  rt_dat <- trials_used %>% filter(!is.na(rt))
+  if (nrow(rt_dat) > 0) {
+    col_cond <- c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")
+    make_violin <- function(mod) {
+      d <- rt_dat %>% filter(Modality == mod)
+      if (nrow(d) == 0) return(NULL)
+      plotly::plot_ly(
+        d,
+        x = ~condition,
+        y = ~rt,
+        color = ~condition,
+        colors = col_cond,
+        type = "violin",
+        box = list(visible = TRUE),
+        meanline = list(visible = TRUE),
+        points = "all",
+        jitter = 0.25,
+        pointpos = 0
+      ) %>%
+        plotly::layout(
+          title = paste0("RT 分布（", mod, "）"),
+          xaxis = list(title = "Condition"),
+          yaxis = list(title = "RT (s)")
+        )
+    }
+    
+    p_img <- make_violin("Image")
+    p_txt <- make_violin("Text")
+    p_rt <- NULL
+    if (!is.null(p_img) && !is.null(p_txt)) {
+      p_rt <- plotly::subplot(p_img, p_txt, nrows = 1, shareY = TRUE, titleX = TRUE)
+    } else if (!is.null(p_img)) {
+      p_rt <- p_img
+    } else if (!is.null(p_txt)) {
+      p_rt <- p_txt
+    }
+    if (!is.null(p_rt)) out <- append(out, list(p_rt))
+  }
+  
+  # 3) 個體一致性效應（正確試次；Incongruent - Congruent）
+  eff <- trials_used %>%
+    filter(acc_used == 1, !is.na(rt)) %>%
+    group_by(subject, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = condition, values_from = mean_rt) %>%
+    mutate(effect = Incongruent - Congruent) %>%
+    arrange(effect)
+  
+  if (nrow(eff) > 0) {
+    eff$dir <- ifelse(eff$effect > 0, "Incongruent slower (+)", "Incongruent faster (-)")
+    p_eff <- plotly::plot_ly(
+      eff,
+      x = ~effect,
+      y = ~subject,
+      type = "bar",
+      orientation = "h",
+      color = ~dir,
+      colors = c("Incongruent slower (+)" = "#FC4E07", "Incongruent faster (-)" = "#00AFBB"),
+      text = ~sprintf("effect = %.3f s", effect),
+      hoverinfo = "text"
+    ) %>%
+      plotly::layout(
+        title = "Congruency Effect (Correct Trials; Incongruent - Congruent)",
+        xaxis = list(title = "RT difference (s)", zeroline = TRUE),
+        yaxis = list(title = "Subject")
+      )
+    out <- append(out, list(p_eff))
+  }
+  
+  # 4) RT 直方圖（依 Condition）
+  if (nrow(rt_dat) > 0) {
+    p_hist <- plotly::plot_ly(
+      rt_dat,
+      x = ~rt,
+      color = ~condition,
+      colors = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07"),
+      type = "histogram",
+      nbinsx = 40,
+      opacity = 0.55
+    ) %>%
+      plotly::layout(
+        title = "RT Histogram (by Condition)",
+        barmode = "overlay",
+        xaxis = list(title = "RT (s)"),
+        yaxis = list(title = "Count")
+      )
+    out <- append(out, list(p_hist))
+  }
+
+  # 5) 各受試者：平均 RT（正確試次；Condition × Modality）
+  subj_rt <- trials_used %>%
+    filter(acc_used == 1, !is.na(rt), !is.na(Modality), !is.na(condition)) %>%
+    group_by(subject, Modality, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), n = n(), .groups = "drop") %>%
+    mutate(cond_mod = paste0(Modality, " × ", condition))
+
+  if (nrow(subj_rt) > 0) {
+    subj_rt$subject <- factor(subj_rt$subject)
+    subj_rt$cond_mod <- factor(subj_rt$cond_mod, levels = c("Image × Congruent", "Image × Incongruent", "Text × Congruent", "Text × Incongruent"))
+
+    p_subj_rt <- plotly::plot_ly(
+      subj_rt,
+      x = ~subject,
+      y = ~mean_rt,
+      color = ~cond_mod,
+      type = "bar",
+      text = ~sprintf("Subject=%s<br>%s<br>n=%d<br>Mean RT=%.3f s", subject, cond_mod, n, mean_rt),
+      hoverinfo = "text"
+    ) %>%
+      plotly::layout(
+        title = "Per-Subject Mean RT (Correct Trials; Condition × Modality)",
+        barmode = "group",
+        xaxis = list(title = "Subject"),
+        yaxis = list(title = "Mean RT (s)")
+      )
+
+    out <- append(out, list(p_subj_rt))
+
+    # Static PNG (labeled)
+    png_abs <- file.path("..", "Behavior_Figures", scenario_id, "subject_mean_rt_condition_modality.png")
+    if (file.exists(png_abs)) {
+      out <- append(out, list(
+        htmltools::HTML("<p><small>圖片版（含數值標記）</small></p>"),
+        htmltools::tags$img(src = knitr::image_uri(png_abs), style = "max-width: 100%; height: auto;")
+      ))
+    } else {
+      out <- append(out, list(htmltools::HTML("<p><small>（尚未找到圖片版；請先執行 make_behavior_plots.R 產生 Behavior_Figures/&lt;Scenario&gt;/*.png。）</small></p>")))
+    }
+  }
+
+  # 6) 反應時間 × 正確率（速度–準確度綜合；一致性效應）
+  cell <- trials_used %>%
+    group_by(subject, Modality, condition) %>%
+    summarise(
+      acc_mean = mean(acc_used, na.rm = TRUE),
+      rt_mean_correct = mean(rt[acc_used == 1], na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    )
+
+  sa <- cell %>%
+    tidyr::pivot_wider(names_from = condition, values_from = c(acc_mean, rt_mean_correct, n), names_sep = "__") %>%
+    mutate(
+      rt_ce = rt_mean_correct__Incongruent - rt_mean_correct__Congruent,
+      acc_ce_pp = (acc_mean__Incongruent - acc_mean__Congruent) * 100
+    ) %>%
+    filter(is.finite(rt_ce), is.finite(acc_ce_pp))
+
+  if (nrow(sa) > 0) {
+    p_sa <- plotly::plot_ly(
+      sa,
+      x = ~rt_ce,
+      y = ~acc_ce_pp,
+      color = ~Modality,
+      type = "scatter",
+      mode = "markers",
+      marker = list(size = 10, opacity = 0.85),
+      text = ~sprintf("Subject=%s<br>Modality=%s<br>RT CE=%.3f s<br>ACC CE=%.1f pp", subject, Modality, rt_ce, acc_ce_pp),
+      hoverinfo = "text"
+    ) %>%
+      plotly::layout(
+        title = "RT vs Accuracy: Congruency Effect (RT CE vs Accuracy CE)",
+        xaxis = list(title = "RT CE (s) = Incongruent − Congruent"),
+        yaxis = list(title = "Accuracy CE (pp) = Incongruent − Congruent"),
+        shapes = list(
+          list(type = "line", xref = "x", yref = "paper", x0 = 0, x1 = 0, y0 = 0, y1 = 1,
+               line = list(color = "gray60", dash = "dash", width = 1)),
+          list(type = "line", xref = "paper", yref = "y", x0 = 0, x1 = 1, y0 = 0, y1 = 0,
+               line = list(color = "gray60", dash = "dash", width = 1))
+        )
+      )
+
+    out <- append(out, list(p_sa))
+  }
+  
+  # 7) 雙軸長條：每位受試者 Mean RT（正確） vs Accuracy（同圖、左右軸）
+  subj_dual <- trials_used %>%
+    group_by(subject) %>%
+    summarise(
+      acc_mean = mean(acc_used, na.rm = TRUE),
+      rt_mean_correct = mean(rt[acc_used == 1], na.rm = TRUE),
+      n = n(),
+      n_correct = sum(acc_used == 1, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(is.finite(acc_mean), is.finite(rt_mean_correct))
+  
+  if (nrow(subj_dual) > 0) {
+    subj_dual$subject <- factor(subj_dual$subject)
+    
+    p_dual <- plotly::plot_ly(subj_dual, x = ~subject) %>%
+      plotly::add_bars(
+        y = ~rt_mean_correct,
+        name = "Mean RT (correct)",
+        yaxis = "y",
+        offsetgroup = "rt",
+        alignmentgroup = "subj",
+        marker = list(color = "rgba(0,175,187,0.85)"),
+        text = ~sprintf("Subject=%s<br>Mean RT=%.3f s<br>n_correct=%d", subject, rt_mean_correct, n_correct),
+        hoverinfo = "text"
+      ) %>%
+      plotly::add_bars(
+        y = ~acc_mean,
+        name = "Accuracy",
+        yaxis = "y2",
+        offsetgroup = "acc",
+        alignmentgroup = "subj",
+        marker = list(color = "rgba(252,78,7,0.55)"),
+        text = ~sprintf("Subject=%s<br>Accuracy=%.1f%%<br>n=%d", subject, acc_mean * 100, n),
+        hoverinfo = "text"
+      ) %>%
+      plotly::layout(
+        title = "Per-Subject: Mean RT (Correct) & Accuracy (Dual-axis)",
+        barmode = "group",
+        xaxis = list(title = "Subject"),
+        yaxis = list(title = "Mean RT (s)"),
+        yaxis2 = list(title = "Accuracy", overlaying = "y", side = "right", tickformat = ".0%", range = c(0, 1))
+      )
+    
+    out <- append(out, list(p_dual))
+
+    # 靜態：並排版（避免雙軸難以閱讀）
+    png_side <- file.path("..", "Behavior_Figures", scenario_id, "rt_accuracy_side_by_side.png")
+    if (file.exists(png_side)) {
+      out <- append(out, list(
+        htmltools::HTML("<p><small>圖片版（並排；含數值標記）</small></p>"),
+        htmltools::tags$img(src = knitr::image_uri(png_side), style = "max-width: 100%; height: auto;")
+      ))
+    } else {
+      out <- append(out, list(htmltools::HTML("<p><small>（尚未找到並排圖片版；請先執行 make_behavior_plots.R 產生 Behavior_Figures/&lt;Scenario&gt;/rt_accuracy_side_by_side.png。）</small></p>")))
+    }
+
+    # Static PNG (labeled)
+    png_abs <- file.path("..", "Behavior_Figures", scenario_id, "dual_rt_accuracy_by_subject.png")
+    if (file.exists(png_abs)) {
+      out <- append(out, list(
+        htmltools::HTML("<p><small>圖片版（含數值標記）</small></p>"),
+        htmltools::tags$img(src = knitr::image_uri(png_abs), style = "max-width: 100%; height: auto;")
+      ))
+    } else {
+      out <- append(out, list(htmltools::HTML("<p><small>（尚未找到圖片版；請先執行 make_behavior_plots.R 產生 Behavior_Figures/&lt;Scenario&gt;/*.png。）</small></p>")))
+    }
+  }
+
+  # 8) Demo 風格：RT 一致性效應（分開：受試者別＋群體平均）
+  demo_subj_abs <- file.path("..", "Behavior_Figures", scenario_id, "demo_rt_congruency_subject.png")
+  demo_group_abs <- file.path("..", "Behavior_Figures", scenario_id, "demo_rt_congruency_group.png")
+  if (file.exists(demo_subj_abs) || file.exists(demo_group_abs)) {
+    out <- append(out, list(htmltools::HTML("<h4>Demo 風格：RT 一致性效應（分開）</h4>")))
+    if (file.exists(demo_subj_abs)) {
+      out <- append(out, list(
+        htmltools::HTML("<p><strong>受試者別（Congruent vs Incongruent）</strong></p>"),
+        htmltools::tags$img(src = knitr::image_uri(demo_subj_abs), style = "max-width: 100%; height: auto;")
+      ))
+    }
+    if (file.exists(demo_group_abs)) {
+      out <- append(out, list(
+        htmltools::HTML("<p><strong>群體平均（Congruent vs Incongruent）</strong></p>"),
+        htmltools::tags$img(src = knitr::image_uri(demo_group_abs), style = "max-width: 100%; height: auto;")
+      ))
+    }
+  }
+  
+  out <- Filter(Negate(is.null), out)
+  htmltools::tagList(out)
+}
+```
+
 # 第三章 互動儀表板 (Interactive Dashboard) {.tabset}
 
 本章節提供互動式圖表，供研究者探索反應時間（RT）分布與個別受試者表現。
@@ -181,17 +599,21 @@ as_table(trial_counts, caption = "各模態 × 一致性條件的有效試驗數
 ## 反應時間分布 (RT Distribution)
 
 ```{r dash_rt_dist, fig.height=6}
-p_dist <- df %>%
-  ggplot(aes(x = Condition, y = rt, fill = Condition)) + 
-  geom_violin(alpha = 0.3) + 
-  geom_boxplot(width = 0.2, fill = "white", outlier.shape = NA) + 
-  scale_fill_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
-  facet_wrap(~Modality) + 
-  theme_pubr() + 
-  labs(title = "RT Distribution by Modality & Condition", y = "RT (s)") + 
-  theme(legend.position = "bottom")
-
-ggplotly(p_dist)
+tryCatch({
+  p_dist <- df %>%
+    ggplot(aes(x = Condition, y = rt, fill = Condition)) + 
+    geom_violin(alpha = 0.3) + 
+    geom_boxplot(width = 0.2, fill = "white", outlier.shape = NA) + 
+    scale_fill_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
+    facet_wrap(~Modality) + 
+    theme_pubr() + 
+    labs(title = "RT Distribution by Modality & Condition", y = "RT (s)") + 
+    theme(legend.position = "bottom")
+  
+  if (knitr::is_html_output()) ggplotly(p_dist) else p_dist
+}, error = function(e) {
+  cat("Dashboard 圖形生成失敗：", e$message)
+})
 ```
 
 ## 受試者平均反應 (Subject RT)
@@ -328,6 +750,101 @@ excel_sheets[["T_Test_Congruency"]] <- ttest_cong
 as_table(ttest_cong[, c(1:8, 11:13)], caption = "配對樣本 t 檢定：Congruent vs Incongruent（RT）")
 ```
 
+### G*Power 檢定力／樣本數估計（配對 t 檢定；等同設定）
+
+以下以本研究「一致性主效應（RT；配對 t 檢定）」為例，提供 **G\\*Power 等同設定**之檢定力（power）與樣本數估計，供後續研究規劃參考。  
+（對應 G\\*Power：*t tests* → *Means: Difference between two dependent means (matched pairs)*；*Two tailed*）
+
+```{r gpower_congruency, echo=FALSE}
+alpha <- 0.05
+target_power <- 0.80
+
+if (!exists("diff_vec")) {
+  cat("（找不到一致性差值向量 diff_vec，無法估計檢定力／樣本數。）")
+} else {
+  diffs <- diff_vec
+  diffs <- diffs[is.finite(diffs)]
+
+  if (length(diffs) < 2 || sd(diffs) == 0) {
+    cat("（差值變異為 0 或樣本數不足，無法估計檢定力／樣本數。）")
+  } else {
+    dz_obs <- mean(diffs) / sd(diffs)  # Cohen's d_z (matched pairs)
+
+    achieved_power <- power.t.test(
+      n = length(diffs),
+      delta = abs(dz_obs), sd = 1,
+      sig.level = alpha,
+      type = "paired",
+      alternative = "two.sided"
+    )$power
+
+    n_required <- ceiling(power.t.test(
+      power = target_power,
+      delta = abs(dz_obs), sd = 1,
+      sig.level = alpha,
+      type = "paired",
+      alternative = "two.sided"
+    )$n)
+
+    dz_mde <- power.t.test(
+      n = length(diffs),
+      power = target_power,
+      sd = 1,
+      sig.level = alpha,
+      type = "paired",
+      alternative = "two.sided"
+    )$delta
+
+    gp_table <- tibble(
+      Item = c(
+        "Test family / Statistical test",
+        "Tail(s)",
+        "α (sig.level)",
+        "Target power",
+        "N (pairs)",
+        "Observed effect size (Cohen's d_z)",
+        "Achieved power (given N, d_z)",
+        "Required N for target power (given d_z)",
+        "Minimum detectable d_z (given N, target power)"
+      ),
+      Value = c(
+        "t tests / Matched pairs (paired t)",
+        "Two-tailed",
+        alpha,
+        target_power,
+        length(diffs),
+        dz_obs,
+        achieved_power,
+        n_required,
+        dz_mde
+      )
+    )
+
+    excel_sheets[["GPower_Congruency"]] <- gp_table
+    as_table(gp_table, caption = "G*Power 等同設定：一致性主效應（配對 t 檢定）的檢定力與樣本數估計")
+
+    dz_levels <- c(0.2, 0.5, 0.8)
+    n_levels <- sapply(dz_levels, function(dz) {
+      ceiling(power.t.test(
+        power = target_power,
+        delta = dz, sd = 1,
+        sig.level = alpha,
+        type = "paired",
+        alternative = "two.sided"
+      )$n)
+    })
+
+    gp_ref <- tibble(
+      EffectSize_dz = dz_levels,
+      Required_N_pairs = as.integer(n_levels)
+    )
+
+    excel_sheets[["GPower_Reference_N"]] <- gp_ref
+    as_table(gp_ref, caption = "參考：不同假設效應量 d_z 下，達目標 power 所需樣本數（配對數）")
+  }
+}
+```
+
 ```{r cong_text, results='asis'}
 cong_means <- subj_cong %>%
   group_by(Condition) %>%
@@ -377,20 +894,127 @@ excel_sheets[["Congruency_Means"]] <- cong_table
 as_table(cong_table, caption = "一致性條件下的受試者平均 RT / ACC")
 ```
 
-```{r cong_plot, fig.cap="各受試者在一致與不一致條件下的平均反應時間"}
+### 各受試者在一致與不一致條件下的平均反應時間
+
+```{r cong_plot}
 if (nrow(subj_cong) > 0) {
   p_cong <- ggplot(subj_cong, aes(x = Condition, y = mean_rt, group = subject)) + 
     geom_line(color = "gray70", alpha = 0.6) + 
     geom_point(aes(color = Condition), size = 2) + 
     scale_color_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) + 
     theme_pubr() + 
-    labs(title = "一致性主效應（RT）", y = "Mean RT (s)")
+    labs(title = "Congruency Main Effect (RT)", y = "Mean RT (s)")
   
   if (knitr::is_html_output()) ggplotly(p_cong) else p_cong
 }
 ```
 
 從上述分析可確認，本實驗成功誘發一致性效應：多數受試者在不一致條件下的反應時間較一致條件為長，且配對樣本 t 檢定之結果顯示此差異達統計顯著水準；Cohen's d 效果量提供了效應大小的估計，有助於未來研究進行樣本數規劃與效果比較。
+
+### 4.2.1 IAT 樣式 D 分數（標準化一致性效應）
+
+```{r iat_d_score}
+iat_scores <- compute_iat_scores(df)
+
+if (nrow(iat_scores) > 0) {
+  excel_sheets[["IAT_Dscore"]] <- iat_scores
+  
+  summary_iat <- iat_scores %>%
+    summarise(
+      N      = n(),
+      mean_D = mean(D),
+      sd_D   = sd(D),
+      min_D  = min(D),
+      max_D  = max(D)
+    )
+  
+  as_table(iat_scores, caption = "各受試者 IAT D 分數（Incongruent - Congruent）")
+  as_table(summary_iat, caption = "D 分數摘要統計")
+} else {
+  cat("無法計算 D 分數（可能缺少條件或樣本數不足）。")
+}
+```
+
+```{r iat_d_plot, fig.height=4.5, fig.width=7}
+if (exists("iat_scores") && nrow(iat_scores) > 0) {
+  cuts <- c(-Inf, -0.65, -0.35, -0.15, 0, 0.15, 0.35, 0.65, Inf)
+  labs_band <- c("強偏 Incong", "中偏 Incong", "微偏 Incong",
+                 "近中性 (-)", "近中性 (+)",
+                 "微偏 Cong", "中偏 Cong", "強偏 Cong")
+  cols_band <- c(
+    "強偏 Incong"="#08306B","中偏 Incong"="#2171B5","微偏 Incong"="#6BAED6",
+    "近中性 (-)"="#BDBDBD","近中性 (+)"="#BDBDBD",
+    "微偏 Cong"="#FDAE6B","中偏 Cong"="#F16913","強偏 Cong"="#A63603"
+  )
+  
+  plot_df <- iat_scores %>%
+    mutate(band = cut(D, breaks = cuts, labels = labs_band, right = FALSE)) %>%
+    arrange(D)
+  
+  ggplot(plot_df, aes(x = reorder(subject, D), y = D, color = band)) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -0.15, ymax = 0.15,
+             fill = "gray90", alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = c(-0.15, 0.15, -0.35, 0.35, -0.65, 0.65),
+               linetype = "dotted", color = "gray70") +
+    geom_segment(aes(xend = subject, y = 0, yend = D), linewidth = 1.2) +
+    geom_point(size = 4) +
+    geom_text(aes(label = sprintf('%.2f', D)),
+              hjust = ifelse(plot_df$D >= 0, -0.15, 1.15), size = 3, color = "black") +
+    coord_flip() +
+    scale_color_manual(values = cols_band, guide = "none") +
+    labs(
+      title = "IAT-style D Score (Sorted by Subject)",
+      subtitle = paste0("0 為中性；虛線為效應區間（±0.15 / 0.35 / 0.65），N = ", nrow(plot_df)),
+      x = "Subject", y = "D (Incongruent - Congruent)"
+    ) +
+    theme_minimal()
+}
+```
+
+### 4.2.2 分模態 IAT D 分數（Image vs Text）
+
+```{r iat_d_modality_plot, fig.height=4.5, fig.width=6.5}
+iat_mod_scores <- compute_iat_scores_by_modality(df)
+
+if (nrow(iat_mod_scores) > 0) {
+  excel_sheets[["IAT_Dscore_Modality"]] <- iat_mod_scores
+  
+  mod_sum <- iat_mod_scores %>%
+    group_by(Modality) %>%
+    summarise(
+      N = n(),
+      mean_D = mean(D),
+      sd_D = sd(D),
+      se_D = sd_D / sqrt(N),
+      ci_low = mean_D - qt(0.975, N - 1) * se_D,
+      ci_high = mean_D + qt(0.975, N - 1) * se_D,
+      .groups = "drop"
+    )
+  
+  ggplot(iat_mod_scores, aes(x = Modality, y = D, group = subject)) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -0.15, ymax = 0.15,
+             fill = "gray90", alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = c(-0.15, 0.15), linetype = "dotted", color = "gray70") +
+    geom_line(color = "gray70", alpha = 0.6) +
+    geom_point(aes(color = Modality), size = 3) +
+    geom_errorbar(data = mod_sum, aes(x = Modality, ymin = ci_low, ymax = ci_high),
+                  inherit.aes = FALSE, width = 0.1, color = "black") +
+    geom_point(data = mod_sum, aes(x = Modality, y = mean_D),
+               inherit.aes = FALSE, shape = 18, size = 4, color = "black") +
+    scale_color_manual(values = c("Image" = "#00AFBB", "Text" = "#FC4E07")) +
+    labs(
+      title = "D Score by Modality: Image vs Text",
+      subtitle = "Gray band: |D| < 0.15 (ROPE); black diamond = mean ± 95% CI",
+      x = "Modality",
+      y = "D (Incongruent - Congruent)"
+    ) +
+    theme_minimal()
+} else {
+  cat("無法計算分模態 D 分數（可能缺少條件或樣本數不足）。")
+}
+```
 
 ## 4.3 圖片實驗：圖片類型 × 一致性（Image × Congruency）
 
@@ -418,13 +1042,15 @@ excel_sheets[["ANOVA_Image"]] <- img_aov_table
 as_table(img_aov_table, caption = "圖片實驗 2×2 ANOVA：RT ~ Condition × Image_Type")
 ```
 
-```{r image_interaction, fig.cap="圖片類型與一致性的交互作用圖"}
+### 圖片類型與一致性的交互作用圖
+
+```{r image_interaction}
 if (nrow(subj_img) > 0) {
   p_img <- ggplot(subj_img, aes(x = Condition, y = mean_rt, color = Image_Type, group = interaction(Image_Type, subject))) + 
     stat_summary(fun = mean, geom = "line", aes(group = Image_Type), size = 0.8) + 
     stat_summary(fun = mean, geom = "point", size = 2, aes(shape = Image_Type)) + 
     theme_pubr() + 
-    labs(title = "圖片實驗：Condition × Image_Type", y = "Mean RT (s)")
+    labs(title = "Image Task: Condition × Image_Type", y = "Mean RT (s)")
   if (knitr::is_html_output()) ggplotly(p_img) else p_img
 }
 ```
@@ -489,7 +1115,9 @@ excel_sheets[["ANOVA_Text"]] <- txt_aov_table
 as_table(txt_aov_table, caption = "文字實驗 2×2×2 ANOVA：RT ~ Condition × Valence × Arousal")
 ```
 
-```{r text_facet, fig.cap="文字實驗：Valence × Condition 於不同 Arousal 下之交互作用圖"}
+### 文字實驗：Valence × Condition 於不同 Arousal 下之交互作用圖
+
+```{r text_facet}
 if (nrow(subj_txt) > 0) {
   p_txt <- ggplot(subj_txt, aes(x = Valence, y = mean_rt, color = Condition, group = Condition)) + 
     stat_summary(fun = mean, geom = "line", size = 0.8) + 
@@ -497,7 +1125,7 @@ if (nrow(subj_txt) > 0) {
     scale_color_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
     facet_wrap(~ Arousal) + 
     theme_pubr() + 
-    labs(title = "文字實驗：Valence × Condition（依 Arousal 分面）",
+    labs(title = "Text Task: Valence × Condition (Faceted by Arousal)",
          y = "Mean RT (s)")
   if (knitr::is_html_output()) ggplotly(p_txt) else p_txt
 }

@@ -1,0 +1,158 @@
+---
+title: "行為資料輸出 Pipeline（R scripts）說明"
+author: "組員劉鎮臺編寫報告"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+find_project_root <- function(start_dir = getwd()) {
+  start_dir <- normalizePath(start_dir, winslash = "/", mustWork = FALSE)
+  for (i in 0:8) {
+    cand <- normalizePath(file.path(start_dir, paste(rep("..", i), collapse = "/")), winslash = "/", mustWork = FALSE)
+    if (file.exists(file.path(cand, "index.html"))) return(cand)
+  }
+  return(normalizePath(start_dir, winslash = "/", mustWork = FALSE))
+}
+
+proj_root <- find_project_root()
+knitr::opts_knit$set(root.dir = proj_root)
+```
+
+# 1) 這次「一鍵重建」用到哪些 R 檔？
+
+本次我用 `Rscript R/pipeline/build_all_outputs.R` 來重建所有輸出；它會依序執行下列 R scripts：
+
+```{r list_scripts}
+scripts_used <- c(
+  "R/pipeline/build_all_outputs.R",
+  "make_behavior_plots.R",
+  "R/pipeline/generate_parametric_reports.R",
+  "R/pipeline/generate_nonparametric_reports.R",
+  "R/pipeline/generate_pilot_reports.R",
+  "R/pipeline/generate_behavior_dashboards.R",
+  "R/pipeline/generate_individual_reports.R",
+  "R/pipeline/generate_all_interpretations.R",
+  "R/pipeline/generate_review_report.R",
+  "R/pipeline/generate_behavior_report_book.R",
+  "R/pipeline/generate_behavior_thesis_report.R"
+)
+
+scripts_tbl <- data.frame(
+  order = seq_along(scripts_used),
+  path = scripts_used,
+  exists = file.exists(scripts_used)
+)
+
+knitr::kable(scripts_tbl, caption = "本次 build 會用到的 R scripts（順序）")
+```
+
+> 目前這些 scripts 都已集中到 `R/` 資料夾（並以 `pipeline/`、`plots/` 基礎分類），避免散落在根目錄造成混淆。
+
+# 2) build_all_outputs.R 做了什麼？
+
+`R/pipeline/build_all_outputs.R` 的核心就是「按順序跑完所有產出」：
+
+```{r show_build_order}
+lines <- readLines("R/pipeline/build_all_outputs.R", warn = FALSE, encoding = "UTF-8")
+order_lines <- grep("^(source\\(|invisible\\(system2\\()", lines, value = TRUE)
+cat(order_lines, sep = "\n")
+```
+
+# 3) 每支 script 的功能與輸出位置
+
+## 3.1 靜態圖（PNG）
+
+- Script：`make_behavior_plots.R`
+- 主要用途：優先從 RAW CSV（根目錄或 `rawdata/` 的 `S*_fMRI_*.csv`）讀取資料，套用各情境規則後輸出靜態圖（含數值標記）；若找不到 RAW 才 fallback 用 `Thesis_Analysis_Output/analysis_data.csv`
+- 輸出位置：
+  - `Behavior_Figures/<Scenario>/*.png`
+  - 另外會把 Base 情境複製到 `Behavior_Figures/*.png` 方便引用
+
+## 3.2 參數統計完整報告（Parametric）
+
+- Script：`R/pipeline/generate_parametric_reports.R`
+- 主要用途：render 下列 Rmd（輸出 HTML + 內含 Excel 匯出）
+  - `Base/Master_Report_Base.Rmd` → `Base/Master_Report_Base.html` + `Base/Master_Statistics_Base.xlsx`
+  - `Exclude_S5S10/Master_Report_Exclude_S5S10.Rmd` → `Exclude_S5S10/Master_Report_Exclude_S5S10.html` + `Exclude_S5S10/Master_Statistics_Exclude_S5S10.xlsx`
+  - `MissingAsError/Master_Report_MissingAsError.Rmd` → `MissingAsError/Master_Report_MissingAsError.html` + `MissingAsError/Master_Statistics_MissingAsError.xlsx`
+  - `NoOutlierExclusion/Report_*_NoOutlier.Rmd` → `NoOutlierExclusion/*.html` + `NoOutlierExclusion/*.xlsx`
+
+## 3.3 無母數完整報告（Non‑Parametric）+ 統計解讀（Interpretation）
+
+- Script：`R/pipeline/generate_nonparametric_reports.R`
+- 主要用途：
+  1. render 無母數報告（`Base/Master_Report_NonParametric.Rmd`）到各情境資料夾
+  2. 再 render 解讀頁（`Interpretation_Template_NonParametric.Rmd`）
+
+## 3.4 Pilot 報告
+
+- Script：`R/pipeline/generate_pilot_reports.R`
+- 主要用途：render `Base/Pilot_Insight_Report.Rmd`（依情境帶參數）到各輸出資料夾
+
+## 3.5 Dashboard（互動探索）
+
+- Script：`R/pipeline/generate_behavior_dashboards.R`
+- 主要用途：render `Behavior_Dashboard.Rmd` 到各情境資料夾（互動式 Plotly/DT）
+
+## 3.6 個人報告（每位受試者）
+
+- Script：`R/pipeline/generate_individual_reports.R`
+- 主要用途：逐一 render `Individual_Reports/Individual_Report_Template.Rmd`
+- 輸出位置：`Individual_Reports/Output/Subject_Report_S00X.html`
+
+## 3.7 各情境「統計解讀」頁（Master）+ 個人解讀頁（Individual）
+
+- Script：`R/pipeline/generate_all_interpretations.R`
+- 主要用途：
+  - 個人解讀：`Individual_Reports/Interpretation_Template_Individual.Rmd`
+  - 情境解讀：`Interpretation_Template_Master.Rmd`
+
+## 3.8 QC / Review（核對 raw / right.csv / 整理後資料一致性）
+
+- Script：`R/pipeline/generate_review_report.R`
+- 主要用途：先跑 python QC，再 render `QC/Review_Report.Rmd`
+- 輸出位置：
+  - `QC/rt_keypress_mismatch.csv`
+  - `QC/right_rt_set_match_summary.csv`
+  - `QC/right_rt_set_mismatches.csv`
+  - `QC/review_issues.csv`
+  - `QC/Review_Report.html`
+
+## 3.9 統整頁（Report Book）
+
+- Script：`R/pipeline/generate_behavior_report_book.R`
+- 主要用途：render `Behavior_Report_Book.Rmd` → `Behavior_Report_Book.html`
+
+## 3.10 論文式可列印報告（Word）
+
+- Script：`R/pipeline/generate_behavior_thesis_report.R`
+- 主要用途：render `Behavior_Thesis_Report.Rmd` → `Behavior_Thesis_Report.docx`
+
+# 4) 怎麼重跑？
+
+## 4.1 一鍵全部重建
+
+```text
+Rscript R/pipeline/build_all_outputs.R
+```
+
+## 4.2 只重跑特定部件（範例）
+
+```text
+Rscript R/pipeline/generate_review_report.R
+Rscript R/pipeline/generate_behavior_dashboards.R
+Rscript R/pipeline/generate_parametric_reports.R
+```
+
+# 5) 重要提醒（避免再「以為有跑但其實沒更新」）
+
+1. **資料來源是** `Thesis_Analysis_Output/analysis_data.csv`（本資料夾的所有報告/圖/統計都以它為主）。
+2. 報告內若需要靜態 PNG，來源是 `Behavior_Figures/<Scenario>/`（由 `make_behavior_plots.R` 產生）。
+3. QC 的結論以 `QC/Review_Report.html` 與 `QC/*.csv` 為準（有列出 mismatch 才算真的不一致）。

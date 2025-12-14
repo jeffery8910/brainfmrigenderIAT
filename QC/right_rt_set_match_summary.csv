@@ -1,0 +1,11 @@
+Subject,Condition,n_right,n_processed,missing_right,missing_processed,n_nonmissing_right,n_nonmissing_processed,max_abs_diff,status
+S001,Congruent,60,60,1,1,59,59,5.165856631350607e-11,OK
+S001,Incongruent,60,60,2,2,58,58,4.959033184093187e-11,OK
+S002,Congruent,60,60,0,0,60,60,5.2434168118509206e-11,OK
+S002,Incongruent,60,60,3,3,57,57,5.023925719882527e-11,OK
+S003,Congruent,60,60,2,2,58,58,4.16771062106136e-11,OK
+S003,Incongruent,60,60,1,1,59,59,5.382361223382759e-11,OK
+S004,Congruent,60,60,0,0,60,60,1.0096434799322651e-10,OK
+S004,Incongruent,60,60,1,1,59,59,1.0292389163168991e-10,OK
+S005,Congruent,60,60,22,22,38,38,1.0814082962440352e-10,OK
+S005,Incongruent,60,60,9,9,51,51,1.0887979406959403e-10,OK

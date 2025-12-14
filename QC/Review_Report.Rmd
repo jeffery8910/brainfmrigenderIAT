@@ -1,0 +1,492 @@
+---
+title: "行為資料 Review / QA 報告"
+subtitle: "RT、按鍵時間、整理後資料一致性核對"
+author: "組員劉鎮臺編寫報告"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+    code_folding: hide
+    df_print: paged
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(DT)
+library(plotly)
+library(htmltools)
+
+find_first <- function(vec) {
+  for (p in vec) if (!is.na(p) && file.exists(p)) return(p)
+  return(NULL)
+}
+
+analysis_path <- find_first(c(
+  file.path("..","..","..","Thesis_Analysis_Output","analysis_data.csv"),
+  file.path("..","..","Thesis_Analysis_Output","analysis_data.csv"),
+  file.path("..","Thesis_Analysis_Output","analysis_data.csv"),
+  file.path("Thesis_Analysis_Output","analysis_data.csv")
+))
+
+qc_path <- find_first(c(
+  file.path("rt_keypress_mismatch.csv"),
+  file.path("QC","rt_keypress_mismatch.csv")
+))
+
+review_issues_path <- find_first(c(
+  file.path("review_issues.csv"),
+  file.path("QC","review_issues.csv"),
+  file.path("..","..","..","Statistical_Analysis_Implementation","review_issues.csv"),
+  file.path("..","..","Statistical_Analysis_Implementation","review_issues.csv"),
+  file.path("..","Statistical_Analysis_Implementation","review_issues.csv")
+))
+
+right_summary_path <- find_first(c(
+  file.path("right_rt_set_match_summary.csv"),
+  file.path("QC","right_rt_set_match_summary.csv")
+))
+
+right_mismatch_path <- find_first(c(
+  file.path("right_rt_set_mismatches.csv"),
+  file.path("QC","right_rt_set_mismatches.csv")
+))
+
+right_csv_path <- find_first(c(
+  file.path("..", "right.csv"),
+  file.path("right.csv"),
+  file.path("..", "..", "right.csv"),
+  file.path("..", "..", "..", "right.csv")
+))
+
+as_dt <- function(.data, caption = NULL) {
+  DT::datatable(
+    .data,
+    caption = caption,
+    options = list(pageLength = 10, scrollX = TRUE)
+  )
+}
+```
+
+## 0) 快速總覽（分類）
+
+```{r overview}
+overview_rows <- list()
+
+# (A) Stored counts
+stored_status <- "MISSING"
+stored_detail <- "找不到 analysis_data.csv"
+if (!is.null(analysis_path) && file.exists(analysis_path)) {
+  raw <- read.csv(analysis_path, stringsAsFactors = FALSE) %>%
+    mutate(
+      rt = suppressWarnings(as.numeric(rt)),
+      acc = suppressWarnings(as.numeric(acc)),
+      is_trial = (is.na(event) | event == "")
+    )
+
+  per_subject_flag <- raw %>%
+    group_by(subject) %>%
+    summarise(
+      Trial_Rows = sum(is_trial, na.rm = TRUE),
+      Event_Rows = sum(!is_trial, na.rm = TRUE),
+      Practice_Trials = sum(is_trial & str_detect(block_type, "練習"), na.rm = TRUE),
+      Formal_Trials = sum(is_trial & str_detect(block_type, "正式"), na.rm = TRUE),
+      Congruent_Trials = sum(is_trial & condition == "Congruent", na.rm = TRUE),
+      Incongruent_Trials = sum(is_trial & condition == "Incongruent", na.rm = TRUE),
+      Total_Rows = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      Flag = (Trial_Rows != 120) | (Event_Rows != 8) | (Practice_Trials != 20) | (Formal_Trials != 100) |
+        (Congruent_Trials != 60) | (Incongruent_Trials != 60) | (Total_Rows != 128)
+    )
+
+  stored_flags <- sum(per_subject_flag$Flag, na.rm = TRUE)
+  stored_status <- ifelse(stored_flags == 0, "OK", "FAIL")
+  stored_detail <- paste0("Flag subjects = ", stored_flags, " / ", nrow(per_subject_flag))
+}
+overview_rows <- append(overview_rows, list(tibble(
+  類別 = "資料結構",
+  檢查 = "Stored 筆數/結構（trial=120；event=8；total=128）",
+  狀態 = stored_status,
+  說明 = stored_detail,
+  來源_輸出 = "Thesis_Analysis_Output/analysis_data.csv"
+)))
+
+# (B) right.csv existence + set match
+right_exist_status <- ifelse(!is.null(right_csv_path) && file.exists(right_csv_path), "OK", "MISSING")
+right_exist_detail <- ifelse(right_exist_status == "OK", paste0("found: ", gsub('\\\\\\\\','/', right_csv_path)), "找不到 right.csv")
+overview_rows <- append(overview_rows, list(tibble(
+  類別 = "right.csv",
+  檢查 = "right.csv 檔案是否存在",
+  狀態 = right_exist_status,
+  說明 = right_exist_detail,
+  來源_輸出 = "right.csv"
+)))
+
+right_match_status <- "MISSING"
+right_match_detail <- "找不到 right_rt_set_match_summary.csv"
+if (!is.null(right_summary_path) && file.exists(right_summary_path)) {
+  sumdf <- read.csv(right_summary_path, stringsAsFactors = FALSE)
+  fail_n <- sum(sumdf$status == "FAIL", na.rm = TRUE)
+  right_match_status <- ifelse(fail_n == 0, "OK", "FAIL")
+  right_match_detail <- paste0("FAIL rows = ", fail_n, " / ", nrow(sumdf), "（subject×condition）")
+}
+overview_rows <- append(overview_rows, list(tibble(
+  類別 = "right.csv",
+  檢查 = "right.csv vs analysis_data.csv（RT multiset 一致性）",
+  狀態 = right_match_status,
+  說明 = right_match_detail,
+  來源_輸出 = "QC/right_rt_set_match_summary.csv"
+)))
+
+# (C) RAW vs Processed mismatch summary
+raw_match_status <- "MISSING"
+raw_match_detail <- "找不到 rt_keypress_mismatch.csv"
+if (!is.null(qc_path) && file.exists(qc_path)) {
+  qc <- read.csv(qc_path, stringsAsFactors = FALSE, check.names = FALSE)
+  not_both <- sum(qc$`_merge` != "both", na.rm = TRUE)
+  mismatch_n <- sum(!is.na(qc$mismatch_reason) & qc$mismatch_reason != "")
+  raw_match_status <- ifelse((not_both == 0) && (mismatch_n == 0), "OK", "FAIL")
+  raw_match_detail <- paste0("not_both=", not_both, "；mismatch_reason=", mismatch_n)
+}
+overview_rows <- append(overview_rows, list(tibble(
+  類別 = "RAW 對齊",
+  檢查 = "RAW onset/keypress/rt vs 整理後 rt/acc",
+  狀態 = raw_match_status,
+  說明 = raw_match_detail,
+  來源_輸出 = "QC/rt_keypress_mismatch.csv"
+)))
+
+# (D) Review issues (rule-based)
+rev_status <- "MISSING"
+rev_detail <- "找不到 review_issues.csv"
+if (!is.null(review_issues_path) && file.exists(review_issues_path)) {
+  issues <- read.csv(review_issues_path, stringsAsFactors = FALSE)
+  n_issues <- nrow(issues)
+  rev_status <- ifelse(n_issues == 0, "OK", "WARN")
+  rev_detail <- paste0("issues=", n_issues)
+}
+overview_rows <- append(overview_rows, list(tibble(
+  類別 = "規則檢查",
+  檢查 = "Review rules（缺漏/極端 RT/欄位不合法/重複索引等）",
+  狀態 = rev_status,
+  說明 = rev_detail,
+  來源_輸出 = "QC/review_issues.csv"
+)))
+
+overview <- dplyr::bind_rows(overview_rows)
+
+as_dt(overview, caption = htmltools::tags$caption("QC 結果總覽（依類別分類）", style="caption-side: top; text-align: left; font-weight: 600;")) %>%
+  DT::formatStyle(
+    "狀態",
+    backgroundColor = DT::styleEqual(c("FAIL", "WARN", "MISSING", "OK"), c("#ffe6e6", "#fff3cd", "#e2e3e5", "transparent")),
+    fontWeight = DT::styleEqual(c("FAIL", "WARN", "MISSING", "OK"), c("bold", "bold", "bold", "normal"))
+  )
+```
+
+## 1) 目的與核對規則
+
+本頁面用來回答「**RAW 檔的 RT / 按鍵時間是否與整理後資料一致**」以及「**每位受試者到底有幾筆（含練習＋正式＋程序 event；含漏答）**」：
+
+- **Stored（存檔）**：以 `analysis_data.csv` 的 *trial 列*為主，保留練習＋正式與漏答（不套用 RT 範圍或離群值排除）。
+- **Used（分析用）**：各情境報告會再套用排除規則（RT 範圍、是否保留離群值、是否將漏答視為錯誤、排除受試者等）。
+- **一致性核對**：以 `QC/rt_keypress_mismatch.csv` 比對 RAW 與整理後的 `rt`、`acc`、block/condition；並檢查 `keypress_abs_raw - onset_abs_raw` 是否等於 `rt_raw`。
+
+## 2) 存檔筆數檢查（含練習/正式與程序 event）
+
+```{r stored_counts}
+if (is.null(analysis_path)) {
+  cat("（找不到 analysis_data.csv，無法做 Review。）")
+} else {
+  raw <- read.csv(analysis_path, stringsAsFactors = FALSE) %>%
+    mutate(
+      rt = suppressWarnings(as.numeric(rt)),
+      acc = suppressWarnings(as.numeric(acc)),
+      is_trial = (is.na(event) | event == "")
+    )
+  
+  per_subject <- raw %>%
+    group_by(subject) %>%
+    summarise(
+      Total_Rows = n(),
+      Trial_Rows = sum(is_trial, na.rm = TRUE),
+      Event_Rows = sum(!is_trial, na.rm = TRUE),
+      Practice_Trials = sum(is_trial & str_detect(block_type, "練習"), na.rm = TRUE),
+      Formal_Trials = sum(is_trial & str_detect(block_type, "正式"), na.rm = TRUE),
+      Congruent_Trials = sum(is_trial & condition == "Congruent", na.rm = TRUE),
+      Incongruent_Trials = sum(is_trial & condition == "Incongruent", na.rm = TRUE),
+      Missing_RT = sum(is_trial & is.na(rt), na.rm = TRUE),
+      Missing_ACC = sum(is_trial & is.na(acc), na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      Expect_Trial = 120,
+      Expect_Practice = 20,
+      Expect_Formal = 100,
+      Expect_Cong = 60,
+      Expect_Incong = 60,
+      Expect_Event = 8,
+      Expect_Total = Expect_Trial + Expect_Event,
+      Flag = (Trial_Rows != Expect_Trial) |
+        (Practice_Trials != Expect_Practice) |
+        (Formal_Trials != Expect_Formal) |
+        (Congruent_Trials != Expect_Cong) |
+        (Incongruent_Trials != Expect_Incong) |
+        (Event_Rows != Expect_Event) |
+        (Total_Rows != Expect_Total)
+    ) %>%
+    arrange(subject)
+  
+  dt <- as_dt(per_subject, caption = htmltools::tags$caption("每位受試者：存檔筆數（trial=120；event=8；total=128）", style="caption-side: top; text-align: left; font-weight: 600;")) %>%
+    DT::formatStyle(
+      "Flag",
+      backgroundColor = DT::styleEqual(c(TRUE, FALSE), c("#ffe6e6", "transparent")),
+      fontWeight = DT::styleEqual(c(TRUE, FALSE), c("bold", "normal"))
+    )
+  
+  # 只要有 flag，就把整列也標出
+  dt <- dt %>%
+    DT::formatStyle(
+      columns = names(per_subject),
+      target = "row",
+      backgroundColor = DT::styleEqual(per_subject$Flag, ifelse(per_subject$Flag, "#fff3cd", "transparent"))
+    )
+  
+  dt
+}
+```
+
+## 3) right.csv：內容檢查與 RT 核對
+
+### 3.1 right.csv 檔案內容（結構/缺漏）
+
+```{r right_overview}
+if (is.null(right_csv_path) || !file.exists(right_csv_path)) {
+  cat("（找不到 right.csv。）")
+} else {
+  r <- read.csv(right_csv_path, stringsAsFactors = FALSE)
+
+  has_cols <- all(c("Subject", "Condition 1", "Reaction Time", "Condition 2", "Reaction Time.1") %in% names(r))
+  if (!has_cols) {
+    cat("（right.csv 欄位不符合預期；請檢查檔案格式。）")
+  } else {
+    r <- r %>%
+      mutate(
+        rt_cong = suppressWarnings(as.numeric(`Reaction Time`)),
+        rt_incong = suppressWarnings(as.numeric(`Reaction Time.1`))
+      )
+
+    per_sub <- r %>%
+      group_by(Subject) %>%
+      summarise(
+        Rows = n(),
+        Missing_Congruent = sum(is.na(rt_cong)),
+        Missing_Incongruent = sum(is.na(rt_incong)),
+        Cond1_uniq = paste(sort(unique(`Condition 1`)), collapse = ","),
+        Cond2_uniq = paste(sort(unique(`Condition 2`)), collapse = ","),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        Expect_Rows = 60,
+        Flag = Rows != Expect_Rows
+      ) %>%
+      arrange(Subject)
+
+    htmltools::tagList(
+      as_dt(per_sub, caption = htmltools::tags$caption("right.csv：每位受試者 60 列（每列=1 個 Congruent RT + 1 個 Incongruent RT；合計 120 trials）", style="caption-side: top; text-align: left; font-weight: 600;")) %>%
+        DT::formatStyle(
+          "Flag",
+          backgroundColor = DT::styleEqual(c(TRUE, FALSE), c("#ffe6e6", "transparent")),
+          fontWeight = DT::styleEqual(c(TRUE, FALSE), c("bold", "normal"))
+        ),
+      as_dt(head(r, 10), caption = htmltools::tags$caption("right.csv 預覽（前 10 列）", style="caption-side: top; text-align: left; font-weight: 600;"))
+    )
+  }
+}
+```
+
+### 3.2 right.csv vs analysis_data.csv：RT multiset 一致性核對
+
+right.csv 的格式特徵：
+
+- 每位受試者 **60 列**；每列包含一個 Congruent RT 與一個 Incongruent RT（因此總計 120 trials）。
+- `nan` 代表該條件下該試次 RT 缺失。
+
+本段 QC 會逐一比對：`right.csv` 與 `Thesis_Analysis_Output/analysis_data.csv` 的 trial RT 是否為**同一組數值**（以 subject × condition 分開比較；比較方式為 multiset/排序後差異）。
+
+```{r qc_right_csv}
+if (is.null(right_summary_path)) {
+  cat("（找不到 right_rt_set_match_summary.csv；請先執行 python qc_compare_right_rt.py。）")
+} else {
+  sumdf <- read.csv(right_summary_path, stringsAsFactors = FALSE) %>%
+    mutate(
+      status = factor(status, levels = c("OK", "FAIL"))
+    )
+
+  dt_sum <- as_dt(sumdf, caption = htmltools::tags$caption("right.csv vs analysis_data.csv：RT 集合一致性摘要（OK 代表完全一致）", style="caption-side: top; text-align: left; font-weight: 600;")) %>%
+    DT::formatStyle(
+      "status",
+      backgroundColor = DT::styleEqual(c("FAIL", "OK"), c("#ffe6e6", "transparent")),
+      fontWeight = DT::styleEqual(c("FAIL", "OK"), c("bold", "normal"))
+    )
+
+  out <- list(dt_sum)
+
+  if (!is.null(right_mismatch_path)) {
+    mism <- read.csv(right_mismatch_path, stringsAsFactors = FALSE)
+    if (nrow(mism) > 0) {
+      out <- append(out, list(htmltools::HTML("<p><strong>發現不一致（請優先處理）：</strong></p>")))
+      out <- append(out, list(as_dt(mism, caption = "right.csv vs analysis_data.csv：不一致明細（前若干列）")))
+    } else {
+      out <- append(out, list(htmltools::HTML("<p><strong>結果：</strong>right.csv 與 analysis_data.csv 的 RT 完全一致（OK）。</p>")))
+    }
+  }
+
+  htmltools::tagList(out)
+}
+```
+
+## 4) RAW vs 整理後：RT / 按鍵時間一致性核對
+
+```{r qc_compare}
+if (is.null(qc_path)) {
+  cat("（找不到 QC/rt_keypress_mismatch.csv，無法做 RAW vs 整理後核對。）")
+} else {
+  qc <- read.csv(qc_path, stringsAsFactors = FALSE, check.names = FALSE) %>%
+    mutate(
+      onset_abs_raw = suppressWarnings(as.numeric(onset_abs_raw)),
+      keypress_abs_raw = suppressWarnings(as.numeric(keypress_abs_raw)),
+      rt_raw = suppressWarnings(as.numeric(rt_raw)),
+      rt_proc = suppressWarnings(as.numeric(rt_proc)),
+      diff_ms = suppressWarnings(as.numeric(diff_ms)),
+      rt_from_keypress = keypress_abs_raw - onset_abs_raw,
+      diff_rt_keypress_ms = (rt_from_keypress - rt_raw) * 1000
+    )
+  
+  qc_summary <- tibble(
+    Rows = nrow(qc),
+    Merge_Both = sum(qc$`_merge` == "both", na.rm = TRUE),
+    Merge_NotBoth = sum(qc$`_merge` != "both", na.rm = TRUE),
+    Mismatch_Reason_N = sum(!is.na(qc$mismatch_reason) & qc$mismatch_reason != ""),
+    AbsDiff_ms_Max = max(abs(qc$diff_ms), na.rm = TRUE),
+    AbsDiff_RtFromKeypress_ms_Max = max(abs(qc$diff_rt_keypress_ms), na.rm = TRUE)
+  )
+  
+  out <- list(
+    as_dt(qc_summary, caption = htmltools::tags$caption("整體摘要（理想狀態：Mismatch_Reason_N = 0，AbsDiff_ms_Max = 0）", style="caption-side: top; text-align: left; font-weight: 600;"))
+  )
+  
+  mism <- qc %>%
+    filter((`_merge` != "both") | (!is.na(mismatch_reason) & mismatch_reason != "") | abs(diff_ms) > 0.5 | abs(diff_rt_keypress_ms) > 0.5) %>%
+    arrange(subject, phase, trial_global)
+  
+  if (nrow(mism) > 0) {
+    out <- append(out, list(htmltools::HTML("<p><strong>發現不一致列（請優先處理）：</strong></p>")))
+    out <- append(out, list(as_dt(mism, caption = "不一致列（filtered）")))
+  } else {
+    out <- append(out, list(htmltools::HTML("<p><strong>結果：</strong>未發現 RAW 與整理後 RT/ACC 不一致（mismatch = 0）。</p>")))
+  }
+  
+  # 色彩標記：RT vs 按鍵時間
+  preview <- qc %>%
+    select(subject, phase, trial_global,
+           onset_abs_raw, keypress_abs_raw, rt_raw, rt_from_keypress,
+           rt_proc, diff_ms, diff_rt_keypress_ms, mismatch_reason, `_merge`) %>%
+    head(200)
+  
+  dt_prev <- as_dt(preview, caption = htmltools::tags$caption("預覽（前 200 列；已用顏色標記 RT 與按鍵時間）", style="caption-side: top; text-align: left; font-weight: 600;")) %>%
+    DT::formatStyle(
+      c("onset_abs_raw", "keypress_abs_raw"),
+      backgroundColor = "#e8f5e9"
+    ) %>%
+    DT::formatStyle(
+      c("rt_raw", "rt_from_keypress", "rt_proc"),
+      backgroundColor = "#e3f2fd"
+    ) %>%
+    DT::formatStyle(
+      c("diff_ms", "diff_rt_keypress_ms"),
+      backgroundColor = DT::styleInterval(c(-0.5, 0.5), c("#ffe6e6", "transparent", "#ffe6e6"))
+    )
+  
+  out <- append(out, list(dt_prev))
+  
+  # 互動式散佈圖：rt_raw vs rt_proc
+  p_scatter <- plotly::plot_ly(
+    qc %>% filter(`_merge` == "both", is.finite(rt_raw), is.finite(rt_proc)),
+    x = ~rt_raw, y = ~rt_proc,
+    type = "scatter", mode = "markers",
+    text = ~sprintf("Subject=%s<br>Trial=%s<br>rt_raw=%.4f<br>rt_proc=%.4f", subject, trial_global, rt_raw, rt_proc),
+    hoverinfo = "text",
+    marker = list(size = 6, opacity = 0.6)
+  ) %>%
+    plotly::layout(
+      title = "rt_raw vs rt_proc（理想：落在對角線）",
+      xaxis = list(title = "rt_raw (s)"),
+      yaxis = list(title = "rt_proc (s)")
+    )
+  
+  out <- append(out, list(p_scatter))
+  
+  # diff_ms 分布
+  p_diff <- plotly::plot_ly(
+    qc %>% filter(is.finite(diff_ms)),
+    x = ~diff_ms,
+    type = "histogram",
+    nbinsx = 60,
+    marker = list(color = "rgba(100,181,246,0.8)")
+  ) %>%
+    plotly::layout(
+      title = "diff_ms 直方圖（RAW - Processed）",
+      xaxis = list(title = "diff_ms"),
+      yaxis = list(title = "Count")
+    )
+  out <- append(out, list(p_diff))
+  
+  htmltools::tagList(out)
+}
+```
+
+## 5) Review Issues（漏答 / Missing RT 等問題清單）
+
+```{r review_issues}
+if (is.null(review_issues_path)) {
+  cat("（找不到 review_issues.csv。）")
+} else {
+  issues <- read.csv(review_issues_path, stringsAsFactors = FALSE)
+  
+  if (nrow(issues) == 0) {
+    cat("（review_issues.csv 目前為空：未偵測到問題。）")
+  } else {
+    issues2 <- issues %>%
+      mutate(
+        category = case_when(
+          issue %in% c("missing_rt", "rt_out_of_window", "rt_extreme") ~ "RT",
+          issue %in% c("missing_acc", "invalid_acc") ~ "ACC/按鍵",
+          issue %in% c("missing_condition", "invalid_condition") ~ "Condition/欄位",
+          issue %in% c("duplicate_trial_global") ~ "索引/重複",
+          issue %in% c("event_has_rt", "event_has_acc") ~ "Event 汙染",
+          TRUE ~ "其他"
+        )
+      )
+
+    by_cat <- issues2 %>%
+      count(category, issue, name = "n") %>%
+      arrange(category, desc(n))
+
+    by_subj <- issues2 %>%
+      count(subject, category, issue, name = "n") %>%
+      arrange(subject, category, desc(n))
+    
+    htmltools::tagList(
+      as_dt(by_cat, caption = htmltools::tags$caption("問題摘要（依分類 × issue code）", style="caption-side: top; text-align: left; font-weight: 600;")),
+      as_dt(by_subj, caption = htmltools::tags$caption("問題摘要（依 subject × 分類 × issue code）", style="caption-side: top; text-align: left; font-weight: 600;")),
+      as_dt(issues2, caption = htmltools::tags$caption("問題明細（review_issues.csv 全表；含分類）", style="caption-side: top; text-align: left; font-weight: 600;"))
+    )
+  }
+}
+```

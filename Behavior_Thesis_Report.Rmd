@@ -1,0 +1,496 @@
+---
+title: "碩士論文式行為資料分析報告（可列印草稿）"
+author: "組員劉鎮臺編寫報告"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  word_document:
+    toc: true
+    number_sections: true
+    fig_caption: false
+    reference_docx: null
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(rstatix)
+  library(effectsize)
+  library(scales)
+  library(knitr)
+  library(kableExtra)
+})
+
+kable_out <- function(.data, caption = NULL, digits = 3) {
+  k <- knitr::kable(.data, caption = caption, digits = digits)
+  if (knitr::is_html_output()) {
+    k <- k %>% kableExtra::kable_styling(full_width = FALSE)
+  }
+  k
+}
+
+find_first <- function(vec) {
+  for (p in vec) if (!is.na(p) && file.exists(p)) return(p)
+  return(NULL)
+}
+
+analysis_path <- find_first(c(
+  file.path("..", "..", "Thesis_Analysis_Output", "analysis_data.csv"),
+  file.path("..", "Thesis_Analysis_Output", "analysis_data.csv"),
+  file.path("Thesis_Analysis_Output", "analysis_data.csv")
+))
+if (is.null(analysis_path)) stop("找不到 analysis_data.csv（Thesis_Analysis_Output）。")
+
+raw_all <- read.csv(analysis_path, stringsAsFactors = FALSE) %>%
+  mutate(
+    rt = suppressWarnings(as.numeric(rt)),
+    acc = suppressWarnings(as.numeric(acc))
+  )
+
+trial_mask <- is.na(raw_all$event) | raw_all$event == ""
+trials_all <- raw_all %>% filter(trial_mask)
+events_all <- raw_all %>% filter(!trial_mask)
+
+rt_min <- 0.2
+rt_max <- 1.5
+
+# Base scenario (align with existing Base reports): exclude none, missing-as-error=FALSE, keep_outliers=FALSE
+trials_used <- trials_all %>%
+  filter(!is.na(rt), !is.na(acc), rt >= rt_min, rt <= rt_max) %>%
+  mutate(
+    subject = factor(subject),
+    Condition = factor(condition, levels = c("Congruent", "Incongruent")),
+    Modality = factor(Modality, levels = c("Image", "Text")),
+    Image_Type = factor(Image_Type),
+    Valence = factor(Valence),
+    Arousal = factor(Arousal)
+  )
+
+N_subjects <- n_distinct(trials_all$subject)
+```
+
+\pagebreak
+
+# 摘要
+
+本文件以 `analysis_data.csv` 為來源，自動彙整本研究之行為資料、資料品質核對結果、以及主要統計分析結果，並以「可直接列印」之章節結構呈現（緒論—方法—結果—討論）。
+
+本報告同時保留：
+
+- **Stored（存檔）**：每位受試者應包含 *練習 20 + 正式 100 = 120 trials*，另含程序 *event=8*。
+- **Used（分析用）**：依 Base 情境（排除缺漏 rt/acc，並將 RT 限制於 0.2–1.5 秒）進行推論統計。
+
+\pagebreak
+
+# 緒論
+
+## 研究背景
+
+本研究屬於反應時間（Reaction Time, RT）典型之「一致/不一致（Congruent/Incongruent）」設計，並包含不同刺激模態（Image vs Text）及其子條件（圖片類型、文字效價/喚醒度），用以觀察一致性效應是否穩定出現、以及該效應是否受刺激屬性調節。
+
+## 研究目的與假設（可依實際內容修改）
+
+1. **一致性主效應（Congruency Effect）**：預期不一致情境的 RT 較一致情境更長、正確率更低。
+2. **模態差異（Modality）**：預期 Image vs Text 在 RT 分布與一致性效應大小可能不同。
+3. **子條件調節**：Image_Type、Valence、Arousal 可能調節一致性效應（交互作用）。
+4. **IAT 樣式 D 分數**：以標準化一致性效應表徵個體差異，並以 ROPE（等效區間）輔助判讀。
+
+\pagebreak
+
+# 方法
+
+## 資料結構與欄位
+
+本報告使用 `analysis_data.csv`，主要欄位包括：
+
+- 受試者：`subject`
+- 試次：`trial_global`、`trial_block`
+- 條件：`condition`（Congruent/Incongruent）
+- 反應時間：`rt`（秒）
+- 正確率：`acc`（0/1）
+- 模態：`Modality`（Image/Text）
+- 圖片：`Image_Type`（若為 Image）
+- 文字：`Valence`、`Arousal`（若為 Text）
+- 程序列：`event`（非空代表程序節點）
+
+## 資料前處理（Base 情境）
+
+本文件採用與 `Base/Master_Report_Base.html` 相同之 Base 規則（用於「推論統計」）：
+
+- 排除缺漏：移除 `rt` 或 `acc` 缺漏的 trial 列
+- RT 範圍：僅保留 `0.2 ≤ rt ≤ 1.5` 秒
+- RT 分析：以 `acc == 1` 的正確試次為主（除非另行註明）
+
+> 註：練習與正式試次皆保留於 Stored（存檔）統計；Used（分析用）依上述規則過濾。
+
+\pagebreak
+
+# 結果
+
+## 資料概況（Stored vs Used）
+
+```{r counts}
+per_subject <- trials_all %>%
+  group_by(subject) %>%
+  summarise(
+    Trial_Stored = n(),
+    Practice_Stored = sum(str_detect(block_type, "練習"), na.rm = TRUE),
+    Formal_Stored = sum(str_detect(block_type, "正式"), na.rm = TRUE),
+    Congruent_Stored = sum(condition == "Congruent", na.rm = TRUE),
+    Incongruent_Stored = sum(condition == "Incongruent", na.rm = TRUE),
+    Missing_RT_Stored = sum(is.na(rt), na.rm = TRUE),
+    Missing_ACC_Stored = sum(is.na(acc), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Expect_Trial = 120,
+    Flag = Trial_Stored != Expect_Trial
+  ) %>%
+  arrange(subject)
+
+used_summary <- trials_used %>%
+  summarise(
+    Subjects = n_distinct(subject),
+    Trials_Used = n(),
+    Mean_RT = mean(rt, na.rm = TRUE),
+    SD_RT = sd(rt, na.rm = TRUE),
+    Accuracy = mean(acc, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+tbl1 <- per_subject %>% select(-Flag)
+tbl2 <- used_summary
+
+kable_out(tbl1, caption = "每位受試者：Stored 試次概況（應為 120 trials；練習20＋正式100）", digits = 3)
+
+kable_out(tbl2, caption = "Base 情境：Used（分析用）資料摘要", digits = 3)
+```
+
+## 概念示意（手繪 Demo）
+
+```{r sketch_demo, out.width="85%"}
+if (file.exists("示範Demo.png")) {
+  knitr::include_graphics("示範Demo.png")
+} else {
+  cat("（找不到 示範Demo.png）")
+}
+```
+
+## 主要圖：RT 一致性效應（Demo 風格；分開）
+
+### 受試者別 RT（Congruent vs Incongruent）
+
+```{r demo_fig_subject, out.width="100%"}
+demo_subj_png <- file.path("Behavior_Figures", "Base", "demo_rt_congruency_subject.png")
+if (file.exists(demo_subj_png)) {
+  knitr::include_graphics(demo_subj_png)
+} else {
+  knitr::include_graphics(file.path("Behavior_Figures", "demo_rt_congruency_subject.png"))
+}
+```
+
+### 群體平均 RT（Congruent vs Incongruent）
+
+```{r demo_fig_group, out.width="70%"}
+demo_group_png <- file.path("Behavior_Figures", "Base", "demo_rt_congruency_group.png")
+if (file.exists(demo_group_png)) {
+  knitr::include_graphics(demo_group_png)
+} else {
+  knitr::include_graphics(file.path("Behavior_Figures", "demo_rt_congruency_group.png"))
+}
+```
+
+## 4.1 一致性主效應（RT；配對 t 檢定）
+
+```{r cong_rt_test}
+subj_rt <- trials_used %>%
+  filter(acc == 1) %>%
+  group_by(subject, Condition) %>%
+  summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = Condition, values_from = mean_rt)
+
+subj_rt_complete <- subj_rt %>% filter(!is.na(Congruent), !is.na(Incongruent))
+N <- nrow(subj_rt_complete)
+
+tt <- t.test(subj_rt_complete$Incongruent, subj_rt_complete$Congruent, paired = TRUE)
+d <- effectsize::cohens_d(subj_rt_complete$Incongruent, subj_rt_complete$Congruent, paired = TRUE)
+
+tbl <- tibble(
+  N = N,
+  Mean_Congruent = mean(subj_rt_complete$Congruent),
+  Mean_Incongruent = mean(subj_rt_complete$Incongruent),
+  Mean_Diff = mean(subj_rt_complete$Incongruent - subj_rt_complete$Congruent),
+  t = unname(tt$statistic),
+  df = unname(tt$parameter),
+  p = tt$p.value,
+  Cohens_d = d$Cohens_d
+)
+
+kable_out(tbl, caption = "一致性主效應（RT；Incongruent − Congruent）", digits = 3)
+```
+
+### G*Power 檢定力／樣本數估計（配對 t 檢定；等同設定）
+
+以下以本研究「一致性主效應（RT；配對 t 檢定）」為例，提供 **G\\*Power 等同設定**之檢定力（power）與樣本數估計，供後續研究規劃參考。  
+（對應 G\\*Power：*t tests* → *Means: Difference between two dependent means (matched pairs)*；*Two tailed*）
+
+```{r gpower_congruency}
+alpha <- 0.05
+target_power <- 0.80
+
+if (!exists("subj_rt_complete") || nrow(subj_rt_complete) < 2) {
+  cat("（樣本數不足，無法估計檢定力／樣本數。）")
+} else {
+  diffs <- subj_rt_complete$Incongruent - subj_rt_complete$Congruent
+  diffs <- diffs[is.finite(diffs)]
+
+  if (length(diffs) < 2 || sd(diffs) == 0) {
+    cat("（差值變異為 0 或不足，無法估計檢定力／樣本數。）")
+  } else {
+    dz_obs <- mean(diffs) / sd(diffs)  # Cohen's d_z (matched pairs)
+
+    achieved_power <- power.t.test(
+      n = length(diffs),
+      delta = abs(dz_obs), sd = 1,
+      sig.level = alpha,
+      type = "paired",
+      alternative = "two.sided"
+    )$power
+
+    n_required <- ceiling(power.t.test(
+      power = target_power,
+      delta = abs(dz_obs), sd = 1,
+      sig.level = alpha,
+      type = "paired",
+      alternative = "two.sided"
+    )$n)
+
+    dz_mde <- power.t.test(
+      n = length(diffs),
+      power = target_power,
+      sd = 1,
+      sig.level = alpha,
+      type = "paired",
+      alternative = "two.sided"
+    )$delta
+
+    tbl_gp <- tibble(
+      Item = c(
+        "Test family / Statistical test",
+        "Tail(s)",
+        "α (sig.level)",
+        "Target power",
+        "N (pairs)",
+        "Observed effect size (Cohen's d_z)",
+        "Achieved power (given N, d_z)",
+        "Required N for target power (given d_z)",
+        "Minimum detectable d_z (given N, target power)"
+      ),
+      Value = c(
+        "t tests / Matched pairs (paired t)",
+        "Two-tailed",
+        alpha,
+        target_power,
+        length(diffs),
+        dz_obs,
+        achieved_power,
+        n_required,
+        dz_mde
+      )
+    )
+
+    kable_out(tbl_gp, caption = "G*Power 等同設定：一致性主效應（配對 t 檢定）的檢定力與樣本數估計", digits = 3)
+
+    dz_levels <- c(0.2, 0.5, 0.8)
+    n_levels <- sapply(dz_levels, function(dz) {
+      ceiling(power.t.test(
+        power = target_power,
+        delta = dz, sd = 1,
+        sig.level = alpha,
+        type = "paired",
+        alternative = "two.sided"
+      )$n)
+    })
+
+    tbl_levels <- tibble(
+      EffectSize_dz = dz_levels,
+      Required_N_pairs = as.integer(n_levels)
+    )
+
+    kable_out(tbl_levels, caption = "參考：不同假設效應量 d_z 下，達目標 power 所需樣本數（配對數）", digits = 0)
+  }
+}
+```
+
+## 4.2 Accuracy 與速度–準確度關係（摘要）
+
+```{r acc_speed}
+subj_acc <- trials_used %>%
+  group_by(subject, Condition) %>%
+  summarise(mean_acc = mean(acc, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = Condition, values_from = mean_acc)
+
+subj_acc_complete <- subj_acc %>% filter(!is.na(Congruent), !is.na(Incongruent))
+N_acc <- nrow(subj_acc_complete)
+
+wc_acc <- tryCatch(
+  wilcox.test(subj_acc_complete$Incongruent, subj_acc_complete$Congruent, paired = TRUE, exact = FALSE),
+  error = function(e) NULL
+)
+
+tbl_acc <- tibble(
+  N = N_acc,
+  Mean_ACC_Congruent = mean(subj_acc_complete$Congruent),
+  Mean_ACC_Incongruent = mean(subj_acc_complete$Incongruent),
+  Mean_Diff_pp = (mean(subj_acc_complete$Incongruent - subj_acc_complete$Congruent)) * 100,
+  Wilcoxon_p = if (is.null(wc_acc)) NA_real_ else wc_acc$p.value
+)
+
+kable_out(tbl_acc, caption = "Accuracy 摘要（差值以 percentage points 表示）", digits = 3)
+```
+
+## 4.3 圖片模態：Condition × Image_Type（重複量數 ANOVA）
+
+```{r anova_image}
+df_img <- trials_used %>% filter(Modality == "Image", acc == 1, !is.na(Image_Type))
+
+subj_img <- df_img %>%
+  group_by(subject, Condition, Image_Type) %>%
+  summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop")
+
+if (nrow(subj_img) > 0) {
+  res <- anova_test(data = subj_img, dv = mean_rt, wid = subject, within = c(Condition, Image_Type))
+  tab <- get_anova_table(res)
+  kable_out(tab, caption = "圖片模態：2×2 重複量數 ANOVA（RT；正確試次）", digits = 3)
+} else {
+  cat("（圖片模態資料不足，無法進行 ANOVA。）")
+}
+```
+
+## 4.4 文字模態：Condition × Valence × Arousal（重複量數 ANOVA）
+
+```{r anova_text}
+df_txt <- trials_used %>% filter(Modality == "Text", acc == 1, !is.na(Valence), !is.na(Arousal))
+
+subj_txt <- df_txt %>%
+  group_by(subject, Condition, Valence, Arousal) %>%
+  summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop")
+
+if (nrow(subj_txt) > 0) {
+  res <- anova_test(data = subj_txt, dv = mean_rt, wid = subject, within = c(Condition, Valence, Arousal))
+  tab <- get_anova_table(res)
+  n_arousal <- nlevels(droplevels(subj_txt$Arousal))
+  kable_out(tab, caption = sprintf("文字模態：2×2×%d 重複量數 ANOVA（RT；正確試次）", n_arousal), digits = 3)
+} else {
+  cat("（文字模態資料不足，無法進行 ANOVA。）")
+}
+```
+
+## 4.5 IAT 樣式 D 分數（標準化一致性效應；含 ROPE）
+
+本研究以「一致性效應」為核心，並以 **IAT 樣式 D 分數**將差異標準化。概念上：
+
+- **相容（Congruent）**較快、**不相容（Incongruent）**較慢 → 代表一致性效應存在
+- D 分數以 pooled SD 進行標準化，便於跨個體比較
+- 額外採用 ROPE（|D| < 0.15）呈現「近中性區」，用來輔助判讀效應是否具實質大小
+
+```{r dscore_calc}
+compute_iat_scores <- function(dat, rt_min_trim = 0.3, rt_max_trim = 10, err_penalty = 0.6) {
+  dat %>%
+    filter(Condition %in% c("Congruent", "Incongruent")) %>%
+    filter(rt >= rt_min_trim, rt <= rt_max_trim) %>%
+    mutate(rt_adj = ifelse(acc == 1, rt, rt + err_penalty)) %>%
+    group_by(subject) %>%
+    summarise(
+      mean_cong = mean(rt_adj[Condition == "Congruent"], na.rm = TRUE),
+      mean_incong = mean(rt_adj[Condition == "Incongruent"], na.rm = TRUE),
+      sd_pool = sd(rt_adj, na.rm = TRUE),
+      n_cong = sum(Condition == "Congruent"),
+      n_incong = sum(Condition == "Incongruent"),
+      D = (mean_incong - mean_cong) / sd_pool,
+      .groups = "drop"
+    ) %>%
+    filter(is.finite(D))
+}
+
+iat_scores <- compute_iat_scores(trials_used)
+
+if (nrow(iat_scores) > 0) {
+  sum_iat <- iat_scores %>%
+    summarise(
+      N = n(),
+      Mean_D = mean(D),
+      SD_D = sd(D),
+      Min_D = min(D),
+      Max_D = max(D),
+      ROPE_Proportion = mean(abs(D) < 0.15)
+    )
+
+  kable_out(iat_scores, caption = "各受試者 IAT 樣式 D 分數（Incongruent − Congruent）", digits = 3)
+
+  kable_out(sum_iat, caption = "D 分數摘要（含 ROPE 比例：|D|<0.15）", digits = 3)
+} else {
+  cat("（無法計算 D 分數：可能缺少條件或樣本數不足。）")
+}
+```
+
+```{r dscore_fig, fig.height=4.5, fig.width=6.8}
+if (exists("iat_scores") && nrow(iat_scores) > 0) {
+  plot_df <- iat_scores %>% arrange(D)
+
+  ggplot(plot_df, aes(x = reorder(subject, D), y = D)) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -0.15, ymax = 0.15, fill = "gray90", alpha = 0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = c(-0.15, 0.15, -0.35, 0.35, -0.65, 0.65), linetype = "dotted", color = "gray70") +
+    geom_segment(aes(xend = subject, y = 0, yend = D), linewidth = 1) +
+    geom_point(size = 3, color = "#2c7fb8") +
+    geom_text(aes(label = sprintf("%.2f", D)),
+              hjust = ifelse(plot_df$D >= 0, -0.15, 1.15), size = 3) +
+    coord_flip() +
+    labs(
+      title = "IAT-style D Score (Sorted by Subject)",
+      subtitle = sprintf("N=%d；ROPE 比例=%.0f%%", nrow(plot_df), mean(abs(plot_df$D) < 0.15) * 100),
+      x = "Subject", y = "D (Incongruent - Congruent)"
+    ) +
+    theme_minimal()
+}
+```
+
+\pagebreak
+
+# 討論（草稿模板）
+
+本章提供可直接放入論文的討論段落骨架（請依研究脈絡補齊引文與理論對應）：
+
+1. **一致性效應是否成功誘發**：就 RT 與 Accuracy 的結果，評估是否出現預期方向的不一致成本。
+2. **模態差異**：若 Text 與 Image 的一致性效應呈現不同強度，可能反映語意/情緒處理路徑差異或刺激複雜度差異。
+3. **子條件調節**：Image_Type、Valence、Arousal 之主效應與交互作用可用於討論刺激特徵與衝突監控的關聯。
+4. **IAT 樣式 D 分數**：在小樣本情境下，可同時回報效果量與 ROPE（等效區間）比例，避免僅以顯著性作結論。
+
+\pagebreak
+
+# 附錄：其他行為圖（Base 情境，PNG）
+
+```{r appendix_figs, results='asis'}
+figs <- c(
+  "dual_rt_accuracy_by_subject.png",
+  "subject_mean_rt_condition_modality.png",
+  "rt_histogram.png",
+  "rt_violin_box.png",
+  "rt_density_modality.png",
+  "accuracy_by_condition_modality.png",
+  "missing_rt_per_subject.png"
+)
+
+for (f in figs) {
+  p <- file.path("Behavior_Figures", "Base", f)
+  if (!file.exists(p)) p <- file.path("Behavior_Figures", f)
+  if (file.exists(p)) {
+    cat("\n\n## ", f, "\n\n", sep = "")
+    p_md <- gsub("\\\\", "/", p)
+    cat(sprintf("![](%s){width=92%%}\n\n", p_md))
+  }
+}
+```

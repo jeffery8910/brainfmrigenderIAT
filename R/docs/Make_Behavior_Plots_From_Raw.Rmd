@@ -1,0 +1,65 @@
+---
+title: "行為圖表產製（RAW CSV → PNG）"
+author: "組員劉鎮臺編寫報告"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+find_project_root <- function(start_dir = getwd()) {
+  start_dir <- normalizePath(start_dir, winslash = "/", mustWork = FALSE)
+  for (i in 0:8) {
+    cand <- normalizePath(file.path(start_dir, paste(rep("..", i), collapse = "/")), winslash = "/", mustWork = FALSE)
+    if (file.exists(file.path(cand, "index.html"))) return(cand)
+  }
+  return(normalizePath(start_dir, winslash = "/", mustWork = FALSE))
+}
+
+proj_root <- find_project_root()
+knitr::opts_knit$set(root.dir = proj_root)
+```
+
+# 1) 目的
+
+本文件提供「只要 Knit 一次就能產圖」的流程，**直接從原材料 RAW CSV**（`rawdata/S*_fMRI_*.csv`）讀入，並輸出到：
+
+- `Behavior_Figures/<Scenario>/*.png`
+- 另會同步複製 Base 情境到 `Behavior_Figures/*.png`（方便被報告引用）
+
+> 圖表內的標題已統一改為英文；顏色設定集中在 `make_behavior_plots.R` 檔案上方，可直接改 hex code。
+
+# 2) RAW 檔案位置與受試者對應
+
+```{r raw_files}
+raw_files <- list.files("rawdata", pattern = "^S.*_fMRI_.*\\.csv$", full.names = TRUE)
+data.frame(n_files = length(raw_files), sample = head(raw_files, 3))
+```
+
+本專案的 RAW 受試者編碼對應：
+
+- `S004,S006,S007,S008,S010` → `S001–S005`
+
+（這個 mapping 已內建在 `make_behavior_plots.R`。）
+
+# 3) 產圖（PNG）
+
+```{r run_plots}
+# 會自動：
+# - 優先讀 rawdata/S*_fMRI_*.csv
+# - 從 stim_class 解析 Modality / Image_Type / Valence / Arousal
+# - 依 6 種情境規則輸出所有 PNG
+invisible(system2("Rscript", args = c("make_behavior_plots.R"), stdout = TRUE, stderr = TRUE))
+```
+
+# 4) 輸出檔案清單（快速檢查）
+
+```{r list_outputs}
+figs <- list.files("Behavior_Figures", pattern = "\\.png$", recursive = TRUE, full.names = TRUE)
+data.frame(n_png = length(figs), sample = head(figs, 12))
+```

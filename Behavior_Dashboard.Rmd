@@ -1,0 +1,244 @@
+---
+title: "行為資料互動式 Dashboard"
+author: "組員劉鎮臺編寫報告"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_depth: 2
+params:
+  title_text: "基礎 (Base)"
+  exclude_ids: null
+  missing_as_error: false
+  keep_outliers: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(plotly)
+library(crosstalk)
+library(htmltools)
+library(DT)
+
+find_first <- function(vec) {
+  for (p in vec) if (!is.na(p) && file.exists(p)) return(p)
+  return(NULL)
+}
+
+base_dir <- normalizePath(dirname(knitr::current_input()), winslash = "/", mustWork = TRUE)
+analysis_candidates <- c(
+  file.path(base_dir, "..", "..", "Thesis_Analysis_Output", "analysis_data.csv"),
+  file.path(base_dir, "..", "Thesis_Analysis_Output", "analysis_data.csv"),
+  file.path(base_dir, "Thesis_Analysis_Output", "analysis_data.csv")
+)
+analysis_path <- find_first(analysis_candidates)
+if (is.null(analysis_path)) stop("找不到 analysis_data.csv（Thesis_Analysis_Output）。")
+
+raw <- read.csv(analysis_path, stringsAsFactors = FALSE)
+trials <- raw %>% filter(is.na(event) | event == "")
+
+# Scenario params
+exclude_ids <- params$exclude_ids
+missing_as_error <- isTRUE(params$missing_as_error)
+keep_outliers <- isTRUE(params$keep_outliers)
+
+rt_min <- 0.2
+rt_max <- 1.5
+
+if (length(exclude_ids) > 0) {
+  trials <- trials %>% filter(!subject %in% exclude_ids)
+}
+
+# Normalize types
+trials <- trials %>%
+  mutate(
+    rt = suppressWarnings(as.numeric(rt)),
+    acc = suppressWarnings(as.numeric(acc)),
+    phase = suppressWarnings(as.numeric(phase)),
+    trial_global = suppressWarnings(as.numeric(trial_global))
+  )
+
+# Missing-as-error handling
+if (missing_as_error) {
+  trials <- trials %>% mutate(acc_used = ifelse(is.na(acc), 0, acc))
+} else {
+  trials <- trials %>% mutate(acc_used = acc)
+}
+
+# Apply scenario rule (match analysis templates)
+if (!keep_outliers) {
+  if (missing_as_error) {
+    trials <- trials %>% filter(is.na(rt) | (rt >= rt_min & rt <= rt_max))
+  } else {
+    trials <- trials %>% filter(!is.na(rt), !is.na(acc_used), rt >= rt_min, rt <= rt_max)
+  }
+} else {
+  if (!missing_as_error) {
+    trials <- trials %>% filter(!is.na(rt), !is.na(acc_used))
+  }
+}
+
+trials <- trials %>%
+  mutate(
+    acc_label = case_when(
+      is.na(acc_used) ~ "Missing",
+      acc_used == 1 ~ "Correct",
+      TRUE ~ "Incorrect"
+    ),
+    block_short = case_when(
+      str_detect(block_type, "練習") ~ "Practice",
+      str_detect(block_type, "正式") ~ "Formal",
+      TRUE ~ block_type
+    ),
+    rt_ms = rt * 1000,
+    rt_window = case_when(
+      is.na(rt) ~ "Missing RT",
+      rt < 0.2 ~ "< 200ms",
+      rt > 1.5 ~ "> 1500ms",
+      TRUE ~ "In [200,1500]ms"
+    ),
+    stim_group = case_when(
+      Modality == "Image" ~ Image_Type,
+      Modality == "Text" & !is.na(Valence) & !is.na(Arousal) ~ paste0(Valence, "_", Arousal),
+      Modality == "Text" & !is.na(Valence) ~ Valence,
+      TRUE ~ NA_character_
+    )
+  )
+
+trials <- trials %>%
+  mutate(
+    subject = factor(subject),
+    condition = factor(condition, levels = c("Congruent", "Incongruent")),
+    Modality = factor(Modality, levels = c("Image", "Text")),
+    acc_label = factor(acc_label, levels = c("Correct", "Incorrect", "Missing")),
+    block_short = factor(block_short),
+    rt_window = factor(rt_window, levels = c("In [200,1500]ms", "< 200ms", "> 1500ms", "Missing RT")),
+    stim_group = factor(stim_group)
+  )
+
+summary_tbl <- tibble(
+  Scenario = params$title_text,
+  Subjects = n_distinct(trials$subject),
+  Trials = nrow(trials),
+  Missing_RT = sum(is.na(trials$rt)),
+  Missing_ACC = sum(is.na(trials$acc))
+)
+
+sd <- crosstalk::SharedData$new(
+  trials,
+  key = ~paste(subject, phase, trial_global, sep = "|"),
+  group = "beh"
+)
+
+col_acc <- c("Correct" = "#00AFBB", "Incorrect" = "#FC4E07", "Missing" = "#BDBDBD")
+col_cond <- c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")
+```
+
+# `r params$title_text`：RT/ACC 互動式 Dashboard
+
+本頁提供 **離線可開啟** 的互動式 Dashboard（不需要 Shiny 伺服器），用來檢視：
+
+- RT 直方圖（可切不同試次類型、條件、正確/錯誤/漏答）
+- Accuracy 分布（依 Condition 統計）
+- RT 隨試次變化（檢查漂移／異常段落）
+
+```{r summary}
+DT::datatable(summary_tbl, options = list(dom = "t"), rownames = FALSE)
+```
+
+## 篩選器與圖表
+
+```{r dashboard, results='asis'}
+filters <- tagList(
+  crosstalk::filter_select("f_subject", "Subject", sd, ~subject, multiple = TRUE),
+  crosstalk::filter_checkbox("f_block", "Block", sd, ~block_short),
+  crosstalk::filter_checkbox("f_mod", "Modality", sd, ~Modality),
+  crosstalk::filter_checkbox("f_cond", "Condition", sd, ~condition),
+  crosstalk::filter_checkbox("f_acc", "Accuracy", sd, ~acc_label),
+  crosstalk::filter_select("f_stim", "Stimulus Group", sd, ~stim_group, multiple = TRUE),
+  crosstalk::filter_checkbox("f_rtwin", "RT Window", sd, ~rt_window),
+  crosstalk::filter_slider("f_rt", "RT (ms)", sd, "rt_ms", step = 25)
+)
+
+p_rt_hist <- plot_ly(
+  sd,
+  x = ~rt_ms,
+  type = "histogram",
+  nbinsx = 50,
+  color = ~acc_label,
+  colors = col_acc,
+  opacity = 0.6
+) %>%
+  layout(
+    title = "RT Histogram (by Accuracy)",
+    barmode = "overlay",
+    bargap = 0.05,
+    xaxis = list(title = "RT (ms)"),
+    yaxis = list(title = "Count")
+  )
+
+p_acc_by_cond <- plot_ly(
+  sd,
+  x = ~condition,
+  type = "histogram",
+  color = ~acc_label,
+  colors = col_acc
+) %>%
+  layout(
+    title = "Accuracy Distribution (by Condition)",
+    barmode = "stack",
+    xaxis = list(title = "Condition"),
+    yaxis = list(title = "Trials (count)")
+  )
+
+p_rt_trial <- plot_ly(
+  sd,
+  x = ~trial_global,
+  y = ~rt_ms,
+  type = "scatter",
+  mode = "markers",
+  color = ~condition,
+  colors = col_cond,
+  marker = list(size = 7, opacity = 0.7),
+  text = ~paste0(
+    "Subject=", subject,
+    "<br>Block=", block_short,
+    "<br>Modality=", Modality,
+    "<br>Cond=", condition,
+    "<br>Acc=", acc_label,
+    "<br>Trial=", trial_global,
+    "<br>RT=", sprintf("%.0f", rt_ms), " ms"
+  ),
+  hoverinfo = "text"
+) %>%
+  layout(
+    title = "RT over Trial Index (Drift / Outliers)",
+    xaxis = list(title = "trial_global"),
+    yaxis = list(title = "RT (ms)")
+  )
+
+plots <- tagList(
+  tags$h4("RT Histogram"),
+  p_rt_hist,
+  tags$hr(),
+  tags$h4("Accuracy (by Condition)"),
+  p_acc_by_cond,
+  tags$hr(),
+  tags$h4("RT over Trial Index"),
+  p_rt_trial
+)
+
+crosstalk::bscols(filters, plots, widths = c(4, 8))
+```
+
+## 篩選後資料表（對照用）
+
+```{r table}
+DT::datatable(
+  sd,
+  options = list(pageLength = 10, scrollX = TRUE),
+  rownames = FALSE
+)
+```

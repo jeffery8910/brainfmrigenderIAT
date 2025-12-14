@@ -1,0 +1,1129 @@
+---
+title: "群體分析結果解讀 (無母數版)"
+author: "組員劉鎮臺編寫報告"
+output:
+  html_document:
+    theme: flatly
+    css: style.css
+params:
+  title_text: "基礎分析 (Base)"
+  xlsx_path: "Master_Statistics_NonParametric.xlsx"
+  exclude_ids: !r c()
+  missing_as_error: FALSE
+  keep_outliers: FALSE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(openxlsx)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(DT)
+if (requireNamespace("plotly", quietly = TRUE)) library(plotly)
+
+# Scenario params
+exclude_ids_param <- params$exclude_ids
+missing_as_error_param <- isTRUE(params$missing_as_error)
+keep_outliers_param <- isTRUE(params$keep_outliers)
+
+rt_min <- 0.2
+rt_max <- 1.5
+
+# Load Data
+xlsx_file <- params$xlsx_path
+report_title <- params$title_text
+
+if(!file.exists(xlsx_file)) {
+  stop(paste("找不到檔案:", xlsx_file))
+}
+
+# Read Sheets (Non-Parametric names)
+wc_cong <- tryCatch(read.xlsx(xlsx_file, sheet = "Wilcoxon_Congruency"), error = function(e) NULL)
+fried_img <- tryCatch(read.xlsx(xlsx_file, sheet = "Friedman_Image"), error = function(e) NULL)
+wc_img_int <- tryCatch(read.xlsx(xlsx_file, sheet = "Wilcoxon_Image_Interaction"), error = function(e) NULL)
+fried_txt <- tryCatch(read.xlsx(xlsx_file, sheet = "Friedman_Text"), error = function(e) NULL)
+wc_txt_val <- tryCatch(read.xlsx(xlsx_file, sheet = "Wilcoxon_Text_Valence_Int"), error = function(e) NULL)
+wc_txt_aro <- tryCatch(read.xlsx(xlsx_file, sheet = "Wilcoxon_Text_Arousal_Int"), error = function(e) NULL)
+wc_txt_3way <- tryCatch(read.xlsx(xlsx_file, sheet = "Wilcoxon_Text_3Way_Int"), error = function(e) NULL)
+
+# Permutation Results
+perm_cong <- tryCatch(read.xlsx(xlsx_file, sheet = "Permutation_Congruency"), error = function(e) NULL)
+perm_img_int <- tryCatch(read.xlsx(xlsx_file, sheet = "Permutation_Image_Interaction"), error = function(e) NULL)
+perm_txt_val <- tryCatch(read.xlsx(xlsx_file, sheet = "Permutation_Text_Valence"), error = function(e) NULL)
+perm_txt_aro <- tryCatch(read.xlsx(xlsx_file, sheet = "Permutation_Text_Arousal"), error = function(e) NULL)
+perm_txt_3way <- tryCatch(read.xlsx(xlsx_file, sheet = "Permutation_Text_3Way"), error = function(e) NULL)
+iat_scores <- tryCatch(read.xlsx(xlsx_file, sheet = "IAT_Dscore"), error = function(e) NULL)
+iat_mod_scores <- tryCatch(read.xlsx(xlsx_file, sheet = "IAT_Dscore_Modality"), error = function(e) NULL)
+
+get_sig_text <- function(p) {
+  if(is.na(p)) return("無法計算")
+  p <- as.numeric(p)
+  if(p < 0.001) return("極達顯著 (p < .001)")
+  if(p < 0.01) return("非常顯著 (p < .01)")
+  if(p < 0.05) return("達顯著 (p < .05)")
+  if(p < 0.1) return("邊緣顯著 (p < .10)")
+  return("未達顯著 (p > .05)")
+}
+
+get_perm_text <- function(perm_res) {
+  if(is.null(perm_res)) return("")
+  p <- as.numeric(perm_res$P_Value)
+  stat <- round(as.numeric(perm_res$Statistic), 3)
+  sig_txt <- get_sig_text(p)
+  cls <- ifelse(p < 0.05, "sig", "nonsig")
+  
+  return(paste0(
+    "<div style='margin-top:10px; padding:10px; background:#f0f8ff; border-radius:5px;'>",
+    "<strong>置換檢定 (Permutation Test) 結果：</strong><br>",
+    "檢定結果：<span class='", cls, "'>", sig_txt, "</span><br>",
+    "統計量 Z = ", stat, ", p = ", format.pval(p, digits=3),
+    "</div>"
+  ))
+}
+
+as_table <- function(.data, caption = "") {
+  if (knitr::is_html_output()) {
+    DT::datatable(.data, options = list(pageLength = 10, scrollX = TRUE), caption = caption)
+  } else {
+    kable(.data, digits = 3, caption = caption) %>%
+      kable_styling(full_width = FALSE)
+  }
+}
+
+# 讀取行為資料（用於「行為資料快速視覺化」與各結果的對應圖）
+find_first <- function(vec) {
+  for (p in vec) if (!is.na(p) && file.exists(p)) return(p)
+  return(NULL)
+}
+
+analysis_path <- find_first(c(
+  file.path("..","..","Thesis_Analysis_Output","analysis_data.csv"),
+  file.path("..","Thesis_Analysis_Output","analysis_data.csv"),
+  file.path("Thesis_Analysis_Output","analysis_data.csv")
+))
+
+beh_raw <- NULL
+beh_trials_raw <- NULL
+beh_trials <- NULL
+beh_summary_tbl <- NULL
+beh_summary_tbl_stored <- NULL
+beh_per_subject_stored <- NULL
+
+if (!is.null(analysis_path)) {
+  beh_raw <- read.csv(analysis_path, stringsAsFactors = FALSE)
+  beh_raw <- beh_raw %>%
+    mutate(
+      rt = suppressWarnings(as.numeric(rt)),
+      acc = suppressWarnings(as.numeric(acc))
+    )
+  
+  beh_trials_raw <- beh_raw %>%
+    filter(is.na(event) | event == "") %>%
+    mutate(
+      acc_used = if (missing_as_error_param) ifelse(is.na(acc), 0, acc) else acc
+    )
+  
+  if (length(exclude_ids_param) > 0) {
+    beh_trials_raw <- beh_trials_raw %>% filter(!subject %in% exclude_ids_param)
+  }
+  
+  beh_trials <- beh_trials_raw
+  if (!keep_outliers_param) {
+    if (missing_as_error_param) {
+      beh_trials <- beh_trials %>% filter(is.na(rt) | (rt >= rt_min & rt <= rt_max))
+    } else {
+      beh_trials <- beh_trials %>% filter(!is.na(rt), !is.na(acc_used), rt >= rt_min, rt <= rt_max)
+    }
+  } else {
+    if (!missing_as_error_param) {
+      beh_trials <- beh_trials %>% filter(!is.na(rt), !is.na(acc_used))
+    }
+  }
+  
+  beh_trials <- beh_trials %>%
+    mutate(
+      subject = factor(subject),
+      condition = factor(condition, levels = c("Congruent", "Incongruent")),
+      Modality = factor(Modality, levels = c("Image", "Text"))
+    )
+  
+  beh_summary_tbl_stored <- tibble(
+    Scenario = report_title,
+    Subjects = n_distinct(beh_trials_raw$subject),
+    Trials_Stored = nrow(beh_trials_raw),
+    Practice_Stored = sum(str_detect(beh_trials_raw$block_type, "練習")),
+    Formal_Stored = sum(str_detect(beh_trials_raw$block_type, "正式")),
+    Congruent_Stored = sum(beh_trials_raw$condition == "Congruent", na.rm = TRUE),
+    Incongruent_Stored = sum(beh_trials_raw$condition == "Incongruent", na.rm = TRUE),
+    Missing_RT_Stored = sum(is.na(beh_trials_raw$rt)),
+    Missing_ACC_Stored = sum(is.na(beh_trials_raw$acc_used)),
+    Keep_Outliers = keep_outliers_param,
+    Missing_As_Error = missing_as_error_param
+  )
+  
+  beh_summary_tbl <- tibble(
+    Scenario = report_title,
+    Subjects = n_distinct(beh_trials$subject),
+    Trials_Used = nrow(beh_trials),
+    Practice_Used = sum(str_detect(beh_trials$block_type, "練習")),
+    Formal_Used = sum(str_detect(beh_trials$block_type, "正式")),
+    Congruent_Used = sum(beh_trials$condition == "Congruent", na.rm = TRUE),
+    Incongruent_Used = sum(beh_trials$condition == "Incongruent", na.rm = TRUE),
+    Missing_RT_Used = sum(is.na(beh_trials$rt)),
+    Missing_ACC_Used = sum(is.na(beh_trials$acc_used)),
+    Keep_Outliers = keep_outliers_param,
+    Missing_As_Error = missing_as_error_param
+  )
+  
+  beh_per_subject_stored <- beh_trials_raw %>%
+    group_by(subject) %>%
+    summarise(
+      Trials_Stored = n(),
+      Practice_Stored = sum(str_detect(block_type, "練習")),
+      Formal_Stored = sum(str_detect(block_type, "正式")),
+      Congruent_Stored = sum(condition == "Congruent", na.rm = TRUE),
+      Incongruent_Stored = sum(condition == "Incongruent", na.rm = TRUE),
+      Missing_RT_Stored = sum(is.na(rt)),
+      Missing_ACC_Stored = sum(is.na(acc_used)),
+      .groups = "drop"
+    )
+}
+```
+
+<style>
+.interpretation-card {
+    background-color: #fff;
+    border: 1px solid #dee2e6;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    padding: 25px;
+    margin-bottom: 30px;
+    border-radius: 8px;
+}
+.card-title {
+    color: #2c3e50;
+    border-bottom: 2px solid #e9ecef;
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+}
+.result-line {
+    font-size: 1.1em;
+    margin-bottom: 10px;
+}
+.sig { color: #e74c3c; font-weight: bold; }
+.nonsig { color: #95a5a6; }
+.back-btn {
+    margin-top: 20px;
+    padding: 10px 20px;
+    background-color: #2c3e50;
+    color: white;
+    text-decoration: none;
+    border-radius: 5px;
+    display: inline-block;
+}
+.back-btn:hover { background-color: #34495e; color: white; }
+</style>
+
+# `r report_title` - 無母數統計結果解讀
+
+本報告採用無母數方法（Wilcoxon / Friedman）對行為數據進行驗證。
+
+## 行為資料快速視覺化
+
+```{r behavior_overview}
+if (is.null(beh_trials) || nrow(beh_trials) == 0) {
+  cat("（找不到 analysis_data.csv 或此情境下無可用試次，無法繪製行為圖。）")
+} else {
+  out <- list(
+    as_table(beh_summary_tbl_stored, caption = "資料摘要（Stored；僅 trial，含練習/正式/漏答）"),
+    as_table(beh_per_subject_stored, caption = "每位受試者 Stored 試次摘要（應為 120；含練習/正式）"),
+    as_table(beh_summary_tbl, caption = "資料摘要（Used；已套用情境規則）"),
+    htmltools::HTML("<p><small>說明：本段圖表會依情境套用：排除受試者、漏答視為錯誤、以及 RT 範圍/離群值保留規則。</small></p>")
+  )
+
+  scenario_id <- if (keep_outliers_param) {
+    if (missing_as_error_param) {
+      "NoOutlier_MissingAsError"
+    } else if (length(exclude_ids_param) > 0) {
+      "NoOutlier_Exclude_S5S10"
+    } else {
+      "NoOutlier_Base"
+    }
+  } else {
+    if (missing_as_error_param) {
+      "MissingAsError"
+    } else if (length(exclude_ids_param) > 0) {
+      "Exclude_S5S10"
+    } else {
+      "Base"
+    }
+  }
+  
+  # 1) Accuracy：Condition × Modality
+  acc_sum <- beh_trials %>%
+    group_by(condition, Modality) %>%
+    summarise(acc_mean = mean(acc_used, na.rm = TRUE), n = n(), .groups = "drop")
+  
+  p_acc <- plotly::plot_ly(
+    acc_sum,
+    x = ~condition,
+    y = ~acc_mean,
+    color = ~Modality,
+    type = "bar",
+    text = ~sprintf("n=%d<br>ACC=%.1f%%", n, acc_mean * 100),
+    hoverinfo = "text"
+  ) %>%
+    plotly::layout(
+      title = "Accuracy: Condition × Modality",
+      barmode = "group",
+      yaxis = list(title = "Accuracy", tickformat = ".0%", range = c(0, 1)),
+      xaxis = list(title = "Condition")
+    )
+  out <- append(out, list(p_acc))
+  
+  # 2) RT 分布（violin；依 Modality 分兩圖）
+  rt_dat <- beh_trials %>% filter(!is.na(rt))
+  if (nrow(rt_dat) > 0) {
+    col_cond <- c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")
+    
+    make_violin <- function(mod) {
+      d <- rt_dat %>% filter(Modality == mod)
+      if (nrow(d) == 0) return(NULL)
+      plotly::plot_ly(
+        d,
+        x = ~condition,
+        y = ~rt,
+        color = ~condition,
+        colors = col_cond,
+        type = "violin",
+        box = list(visible = TRUE),
+        meanline = list(visible = TRUE),
+        points = "all",
+        jitter = 0.25,
+        pointpos = 0
+      ) %>%
+        plotly::layout(
+          title = paste0("RT 分布（", mod, "）"),
+          xaxis = list(title = "Condition"),
+          yaxis = list(title = "RT (s)")
+        )
+    }
+    
+    p_img <- make_violin("Image")
+    p_txt <- make_violin("Text")
+    p_rt <- NULL
+    if (!is.null(p_img) && !is.null(p_txt)) {
+      p_rt <- plotly::subplot(p_img, p_txt, nrows = 1, shareY = TRUE, titleX = TRUE)
+    } else if (!is.null(p_img)) {
+      p_rt <- p_img
+    } else if (!is.null(p_txt)) {
+      p_rt <- p_txt
+    }
+    if (!is.null(p_rt)) out <- append(out, list(p_rt))
+  }
+  
+  # 3) 個體一致性效應（正確試次；Incongruent - Congruent）
+  eff <- beh_trials %>%
+    filter(acc_used == 1, !is.na(rt)) %>%
+    group_by(subject, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = condition, values_from = mean_rt) %>%
+    mutate(effect = Incongruent - Congruent) %>%
+    arrange(effect)
+  
+  if (nrow(eff) > 0) {
+    eff$dir <- ifelse(eff$effect > 0, "Incongruent slower (+)", "Incongruent faster (-)")
+    p_eff <- plotly::plot_ly(
+      eff,
+      x = ~effect,
+      y = ~subject,
+      type = "bar",
+      orientation = "h",
+      color = ~dir,
+      colors = c("Incongruent slower (+)" = "#FC4E07", "Incongruent faster (-)" = "#00AFBB"),
+      text = ~sprintf("effect = %.3f s", effect),
+      hoverinfo = "text"
+    ) %>%
+      plotly::layout(
+        title = "Congruency Effect (Correct Trials; Incongruent - Congruent)",
+        xaxis = list(title = "RT difference (s)", zeroline = TRUE),
+        yaxis = list(title = "Subject")
+      )
+    out <- append(out, list(p_eff))
+  }
+  
+  # 4) RT 直方圖（依 Condition）
+  if (nrow(rt_dat) > 0) {
+    p_hist <- plotly::plot_ly(
+      rt_dat,
+      x = ~rt,
+      color = ~condition,
+      colors = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07"),
+      type = "histogram",
+      nbinsx = 40,
+      opacity = 0.55
+    ) %>%
+      plotly::layout(
+        title = "RT Histogram (by Condition)",
+        barmode = "overlay",
+        xaxis = list(title = "RT (s)"),
+        yaxis = list(title = "Count")
+      )
+    out <- append(out, list(p_hist))
+  }
+
+  # 5) 各受試者：平均 RT（正確試次；Condition × Modality）
+  subj_rt <- beh_trials %>%
+    filter(acc_used == 1, !is.na(rt), !is.na(Modality), !is.na(condition)) %>%
+    group_by(subject, Modality, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), n = n(), .groups = "drop") %>%
+    mutate(cond_mod = paste0(Modality, " × ", condition))
+
+  if (nrow(subj_rt) > 0) {
+    subj_rt$subject <- factor(subj_rt$subject)
+    subj_rt$cond_mod <- factor(subj_rt$cond_mod, levels = c("Image × Congruent", "Image × Incongruent", "Text × Congruent", "Text × Incongruent"))
+
+    p_subj_rt <- plotly::plot_ly(
+      subj_rt,
+      x = ~subject,
+      y = ~mean_rt,
+      color = ~cond_mod,
+      type = "bar",
+      text = ~sprintf("Subject=%s<br>%s<br>n=%d<br>Mean RT=%.3f s", subject, cond_mod, n, mean_rt),
+      hoverinfo = "text"
+    ) %>%
+      plotly::layout(
+        title = "Per-Subject Mean RT (Correct Trials; Condition × Modality)",
+        barmode = "group",
+        xaxis = list(title = "Subject"),
+        yaxis = list(title = "Mean RT (s)")
+      )
+
+    out <- append(out, list(p_subj_rt))
+
+    # Static PNG (labeled)
+    png_abs <- file.path("Behavior_Figures", scenario_id, "subject_mean_rt_condition_modality.png")
+    if (file.exists(png_abs)) {
+      out <- append(out, list(
+        htmltools::HTML("<p><small>圖片版（含數值標記）</small></p>"),
+        htmltools::tags$img(src = knitr::image_uri(png_abs), style = "max-width: 100%; height: auto;")
+      ))
+    } else {
+      out <- append(out, list(htmltools::HTML("<p><small>（尚未找到圖片版；請先執行 make_behavior_plots.R 產生 Behavior_Figures/&lt;Scenario&gt;/*.png。）</small></p>")))
+    }
+  }
+
+  # 6) 反應時間 × 正確率（速度–準確度綜合；一致性效應）
+  cell <- beh_trials %>%
+    group_by(subject, Modality, condition) %>%
+    summarise(
+      acc_mean = mean(acc_used, na.rm = TRUE),
+      rt_mean_correct = mean(rt[acc_used == 1], na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    )
+
+  sa <- cell %>%
+    tidyr::pivot_wider(names_from = condition, values_from = c(acc_mean, rt_mean_correct, n), names_sep = "__") %>%
+    mutate(
+      rt_ce = rt_mean_correct__Incongruent - rt_mean_correct__Congruent,
+      acc_ce_pp = (acc_mean__Incongruent - acc_mean__Congruent) * 100
+    ) %>%
+    filter(is.finite(rt_ce), is.finite(acc_ce_pp))
+
+  if (nrow(sa) > 0) {
+    p_sa <- plotly::plot_ly(
+      sa,
+      x = ~rt_ce,
+      y = ~acc_ce_pp,
+      color = ~Modality,
+      type = "scatter",
+      mode = "markers",
+      marker = list(size = 10, opacity = 0.85),
+      text = ~sprintf("Subject=%s<br>Modality=%s<br>RT CE=%.3f s<br>ACC CE=%.1f pp", subject, Modality, rt_ce, acc_ce_pp),
+      hoverinfo = "text"
+    ) %>%
+      plotly::layout(
+        title = "RT vs Accuracy: Congruency Effect (RT CE vs Accuracy CE)",
+        xaxis = list(title = "RT CE (s) = Incongruent − Congruent"),
+        yaxis = list(title = "Accuracy CE (pp) = Incongruent − Congruent"),
+        shapes = list(
+          list(type = "line", xref = "x", yref = "paper", x0 = 0, x1 = 0, y0 = 0, y1 = 1,
+               line = list(color = "gray60", dash = "dash", width = 1)),
+          list(type = "line", xref = "paper", yref = "y", x0 = 0, x1 = 1, y0 = 0, y1 = 0,
+               line = list(color = "gray60", dash = "dash", width = 1))
+        )
+      )
+
+    out <- append(out, list(p_sa))
+  }
+  
+  # 7) 雙軸長條：每位受試者 Mean RT（正確） vs Accuracy（同圖、左右軸）
+  subj_dual <- beh_trials %>%
+    group_by(subject) %>%
+    summarise(
+      acc_mean = mean(acc_used, na.rm = TRUE),
+      rt_mean_correct = mean(rt[acc_used == 1], na.rm = TRUE),
+      n = n(),
+      n_correct = sum(acc_used == 1, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(is.finite(acc_mean), is.finite(rt_mean_correct))
+  
+  if (nrow(subj_dual) > 0) {
+    subj_dual$subject <- factor(subj_dual$subject)
+    
+    p_dual <- plotly::plot_ly(subj_dual, x = ~subject) %>%
+      plotly::add_bars(
+        y = ~rt_mean_correct,
+        name = "Mean RT (correct)",
+        yaxis = "y",
+        offsetgroup = "rt",
+        alignmentgroup = "subj",
+        marker = list(color = "rgba(0,175,187,0.85)"),
+        text = ~sprintf("Subject=%s<br>Mean RT=%.3f s<br>n_correct=%d", subject, rt_mean_correct, n_correct),
+        hoverinfo = "text"
+      ) %>%
+      plotly::add_bars(
+        y = ~acc_mean,
+        name = "Accuracy",
+        yaxis = "y2",
+        offsetgroup = "acc",
+        alignmentgroup = "subj",
+        marker = list(color = "rgba(252,78,7,0.55)"),
+        text = ~sprintf("Subject=%s<br>Accuracy=%.1f%%<br>n=%d", subject, acc_mean * 100, n),
+        hoverinfo = "text"
+      ) %>%
+      plotly::layout(
+        title = "Per-Subject: Mean RT (Correct) & Accuracy (Dual-axis)",
+        barmode = "group",
+        xaxis = list(title = "Subject"),
+        yaxis = list(title = "Mean RT (s)"),
+        yaxis2 = list(title = "Accuracy", overlaying = "y", side = "right", tickformat = ".0%", range = c(0, 1))
+      )
+    
+    out <- append(out, list(p_dual))
+
+    # Static PNG (labeled)
+    png_abs <- file.path("Behavior_Figures", scenario_id, "dual_rt_accuracy_by_subject.png")
+    if (file.exists(png_abs)) {
+      out <- append(out, list(
+        htmltools::HTML("<p><small>圖片版（含數值標記）</small></p>"),
+        htmltools::tags$img(src = knitr::image_uri(png_abs), style = "max-width: 100%; height: auto;")
+      ))
+    } else {
+      out <- append(out, list(htmltools::HTML("<p><small>（尚未找到圖片版；請先執行 make_behavior_plots.R 產生 Behavior_Figures/&lt;Scenario&gt;/*.png。）</small></p>")))
+    }
+  }
+  
+  out <- Filter(Negate(is.null), out)
+  htmltools::tagList(out)
+}
+```
+
+## IAT 樣式 D 分數摘要
+
+本報告中的 **D 分數**用來表徵「一致性效應」的標準化大小，核心概念是：
+
+- 先依本情境規則做前處理（如：RT 範圍、是否保留離群值、是否將漏答視為錯誤等）。
+- 分別計算 **Incongruent** 與 **Congruent** 的平均 RT（以可用試次為準）。
+- 以兩條件的（合併）變異量做標準化，得到每位受試者的 D：**D = (Mean(Incongruent) − Mean(Congruent)) / SD_pooled**。
+- **D > 0** 通常代表 *Incongruent 較慢*（一致性效應為正）；|D| 越大表示效應越強。
+- 下方圖以 **ROPE（|D| < 0.15）** 標出「近中性」區，避免只看顯著性。
+
+```{r iat_section, results='asis'}
+if (!is.null(iat_scores)) {
+  summary_iat <- iat_scores %>%
+    summarise(
+      N = n(),
+      mean_D = mean(D),
+      sd_D = sd(D),
+      min_D = min(D),
+      max_D = max(D)
+    )
+  
+  htmltools::tagList(
+    as_table(iat_scores, caption = "各受試者 IAT D 分數（Incongruent - Congruent）"),
+    as_table(summary_iat, caption = "D 分數摘要統計")
+  )
+} else {
+  cat("（此報告來源的 Excel 未包含 IAT_Dscore 工作表，請確認生成時已寫入。）")
+}
+```
+
+```{r iat_plots}
+# (F) ROPE / 等效區間視覺化：灰帶表示 |D| < 0.15（互動式）
+if (!is.null(iat_scores) && nrow(iat_scores) > 0) {
+  cuts <- c(-Inf, -0.65, -0.35, -0.15, 0, 0.15, 0.35, 0.65, Inf)
+  labs_band <- c("強偏 Incong", "中偏 Incong", "微偏 Incong",
+                 "近中性 (-)", "近中性 (+)",
+                 "微偏 Cong", "中偏 Cong", "強偏 Cong")
+  cols_band <- c(
+    "強偏 Incong"="#08306B","中偏 Incong"="#2171B5","微偏 Incong"="#6BAED6",
+    "近中性 (-)"="#BDBDBD","近中性 (+)"="#BDBDBD",
+    "微偏 Cong"="#FDAE6B","中偏 Cong"="#F16913","強偏 Cong"="#A63603"
+  )
+  
+  plot_df <- iat_scores %>%
+    mutate(
+      subject = as.character(subject),
+      D = suppressWarnings(as.numeric(D))
+    ) %>%
+    filter(!is.na(D), is.finite(D)) %>%
+    mutate(band = cut(D, breaks = cuts, labels = labs_band, right = FALSE)) %>%
+    arrange(D)
+  
+  if (nrow(plot_df) > 0) {
+    plot_df$subject <- factor(plot_df$subject, levels = plot_df$subject)
+    
+    n <- nrow(plot_df)
+    mean_D <- mean(plot_df$D, na.rm = TRUE)
+    sd_D <- sd(plot_df$D, na.rm = TRUE)
+    se <- sd_D / sqrt(n)
+    ci_low <- mean_D - qt(0.975, n - 1) * se
+    ci_high <- mean_D + qt(0.975, n - 1) * se
+    rope_prop <- mean(abs(plot_df$D) < 0.15, na.rm = TRUE)
+    
+    hover_txt <- sprintf(
+      "Subject=%s<br>D=%.3f<br>%s",
+      plot_df$subject, plot_df$D, plot_df$band
+    )
+    
+    p <- plotly::plot_ly(plot_df, y = ~subject) %>%
+      plotly::add_segments(
+        x = 0, xend = ~D,
+        y = ~subject, yend = ~subject,
+        color = ~band, colors = cols_band,
+        showlegend = FALSE,
+        hoverinfo = "none",
+        line = list(width = 4)
+      ) %>%
+      plotly::add_markers(
+        x = ~D, y = ~subject,
+        color = ~band, colors = cols_band,
+        showlegend = FALSE,
+        text = hover_txt, hoverinfo = "text",
+        marker = list(size = 10, line = list(color = "rgba(0,0,0,0.15)", width = 1))
+      ) %>%
+      plotly::layout(
+        title = list(text = "IAT-style D Score (Sorted; ROPE |D| < 0.15)"),
+        xaxis = list(title = "D (Incongruent - Congruent)", zeroline = TRUE, zerolinecolor = "gray60"),
+        yaxis = list(title = "Subject"),
+        shapes = list(
+          list(
+            type = "rect",
+            xref = "x", yref = "paper",
+            x0 = -0.15, x1 = 0.15,
+            y0 = 0, y1 = 1,
+            fillcolor = "rgba(200,200,200,0.35)",
+            line = list(width = 0)
+          ),
+          list(
+            type = "line",
+            xref = "x", yref = "paper",
+            x0 = mean_D, x1 = mean_D,
+            y0 = 0, y1 = 1,
+            line = list(color = "black", width = 2, dash = "dot")
+          )
+        ),
+        annotations = list(
+          list(
+            x = mean_D, y = 1.02, xref = "x", yref = "paper",
+            text = sprintf(
+              "Mean=%.3f（95%% CI [%.3f, %.3f]）<br>ROPE 比例=%.0f%%；N=%d",
+              mean_D, ci_low, ci_high, rope_prop * 100, n
+            ),
+            showarrow = FALSE,
+            xanchor = "center",
+            font = list(size = 12, color = "black")
+          )
+        ),
+        margin = list(l = 80, r = 30, t = 80, b = 50)
+      )
+    
+    p
+  }
+}
+
+# (H) 分模態 D：Image vs Text（paired dot；互動式）
+if (!is.null(iat_mod_scores) && nrow(iat_mod_scores) > 0) {
+  dfm <- iat_mod_scores %>%
+    mutate(
+      subject = as.character(subject),
+      Modality = as.character(Modality),
+      D = suppressWarnings(as.numeric(D))
+    ) %>%
+    filter(!is.na(D), is.finite(D), Modality %in% c("Image", "Text")) %>%
+    mutate(Modality = factor(Modality, levels = c("Image", "Text")))
+  
+  if (nrow(dfm) > 0) {
+    mod_sum <- dfm %>%
+      group_by(Modality) %>%
+      summarise(
+        n = n(),
+        mean_D = mean(D),
+        sd_D = sd(D),
+        se_D = sd_D / sqrt(n),
+        ci_low = mean_D - qt(0.975, n - 1) * se_D,
+        ci_high = mean_D + qt(0.975, n - 1) * se_D,
+        .groups = "drop"
+      )
+    
+    hover_txt <- sprintf(
+      "Subject=%s<br>Modality=%s<br>D=%.3f",
+      dfm$subject, dfm$Modality, dfm$D
+    )
+    
+    p <- plotly::plot_ly(
+      dfm,
+      x = ~Modality,
+      y = ~D,
+      color = ~subject,
+      type = "scatter",
+      mode = "lines+markers",
+      text = hover_txt,
+      hoverinfo = "text"
+    ) %>%
+      plotly::add_segments(
+        data = mod_sum,
+        x = ~Modality, xend = ~Modality,
+        y = ~ci_low, yend = ~ci_high,
+        inherit = FALSE,
+        line = list(color = "black", width = 2),
+        showlegend = FALSE,
+        hoverinfo = "none"
+      ) %>%
+      plotly::add_markers(
+        data = mod_sum,
+        x = ~Modality,
+        y = ~mean_D,
+        inherit = FALSE,
+        marker = list(symbol = "diamond", size = 12, color = "black"),
+        showlegend = FALSE,
+        hoverinfo = "text",
+        text = ~sprintf("Mean=%.3f<br>95%% CI [%.3f, %.3f]", mean_D, ci_low, ci_high)
+      ) %>%
+      plotly::layout(
+        title = list(text = "D Score by Modality: Image vs Text (Paired Lines + Mean ± 95% CI)"),
+        xaxis = list(title = "Modality"),
+        yaxis = list(title = "D (Incongruent - Congruent)"),
+        shapes = list(
+          list(
+            type = "rect",
+            xref = "paper", yref = "y",
+            x0 = 0, x1 = 1,
+            y0 = -0.15, y1 = 0.15,
+            fillcolor = "rgba(200,200,200,0.35)",
+            line = list(width = 0)
+          ),
+          list(
+            type = "line",
+            xref = "paper", yref = "y",
+            x0 = 0, x1 = 1,
+            y0 = 0, y1 = 0,
+            line = list(color = "gray60", width = 1, dash = "dash")
+          )
+        ),
+        margin = list(l = 80, r = 30, t = 80, b = 50)
+      )
+    
+    p
+  }
+}
+```
+
+---
+
+## 1. 整體一致性效應 (Wilcoxon Signed-Rank)
+
+<div class="interpretation-card">
+<h3 class="card-title">配對樣本 Wilcoxon 檢定</h3>
+```{r cong_interp, results='asis'}
+if(!is.null(wc_cong)) {
+  p_val <- as.numeric(wc_cong$p)
+  stat <- wc_cong$statistic
+  n_obs <- if ("n1.y" %in% names(wc_cong)) wc_cong$n1.y else NA  # 每條件的配對樣本數（n1 = n2）
+  r_eff <- wc_cong$effsize
+  
+  if (is.na(n_obs) && !is.null(beh_trials) && nrow(beh_trials) > 0) {
+    subj_m <- beh_trials %>%
+      filter(acc_used == 1, !is.na(rt), condition %in% c("Congruent", "Incongruent")) %>%
+      group_by(subject, condition) %>%
+      summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+      tidyr::pivot_wider(names_from = condition, values_from = mean_rt)
+    n_obs <- sum(!is.na(subj_m$Congruent) & !is.na(subj_m$Incongruent))
+  }
+  
+  sig_class <- ifelse(p_val < 0.05, "sig", "nonsig")
+  
+  cat(paste0("<div class='result-line'>檢定結果：<span class='", sig_class, "'>", get_sig_text(p_val), "</span></div>"))
+  cat(paste0("<div>統計量：V = ", stat, ", p = ", format.pval(p_val, digits=3), ", N = ", n_obs, "</div>"))
+  cat(paste0("<div>效果量 (r)：", round(r_eff, 3), "</div>"))
+  
+  if(p_val < 0.05) {
+    cat("<p class='mt-3'><strong>推論：</strong> 無母數檢定證實，不一致情境的反應時間顯著異於一致情境。</p>")
+  } else {
+    cat("<p class='mt-3'><strong>推論：</strong> 未觀察到顯著的整體一致性效應。</p>")
+  }
+  
+  cat(get_perm_text(perm_cong))
+  
+} else {
+  cat("無資料。")
+}
+```
+</div>
+
+```{r cong_plot, fig.height=4.5}
+if (!is.null(beh_trials) && nrow(beh_trials) > 0) {
+  subj_m <- beh_trials %>%
+    filter(acc_used == 1, !is.na(rt), condition %in% c("Congruent", "Incongruent")) %>%
+    group_by(subject, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop")
+  
+  if (nrow(subj_m) > 0) {
+    p <- plotly::plot_ly(
+      subj_m,
+      x = ~condition,
+      y = ~mean_rt,
+      color = ~subject,
+      type = "scatter",
+      mode = "lines+markers",
+      hovertemplate = paste0(
+        "Subject=%{color}<br>Condition=%{x}<br>Mean RT=%{y:.3f}s<extra></extra>"
+      )
+    ) %>%
+      plotly::layout(
+        title = "Corresponding Plot: Overall Congruency Effect (Paired Mean RT)",
+        xaxis = list(title = "Condition"),
+        yaxis = list(title = "Mean RT (s)"),
+        showlegend = TRUE
+      )
+    p
+  }
+}
+```
+
+## 2. 圖片實驗：交互作用 (Wilcoxon on Differences)
+
+<div class="interpretation-card">
+<h3 class="card-title">圖片類型 × 一致性</h3>
+```{r img_int, results='asis'}
+if(!is.null(wc_img_int)) {
+  p_int <- as.numeric(wc_img_int$p)
+  stat <- wc_img_int$statistic
+  n_obs <- if ("n1.y" %in% names(wc_img_int)) wc_img_int$n1.y else NA
+  r_eff <- wc_img_int$effsize
+  sig_class <- ifelse(p_int < 0.05, "sig", "nonsig")
+  
+  if (is.na(n_obs) && !is.null(beh_trials) && nrow(beh_trials) > 0) {
+    eff_by_type <- beh_trials %>%
+      filter(Modality == "Image", acc_used == 1, !is.na(rt), !is.na(Image_Type),
+             condition %in% c("Congruent", "Incongruent")) %>%
+      group_by(subject, Image_Type, condition) %>%
+      summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+      tidyr::pivot_wider(names_from = condition, values_from = mean_rt) %>%
+      mutate(effect = Incongruent - Congruent) %>%
+      select(subject, Image_Type, effect) %>%
+      tidyr::pivot_wider(names_from = Image_Type, values_from = effect)
+    # 有兩種圖片類型才算有效
+    n_obs <- eff_by_type %>%
+      transmute(ok = rowSums(!is.na(.)) >= 2) %>%
+      summarise(n = sum(ok)) %>%
+      pull(n)
+  }
+    
+  cat(paste0("<div class='result-line'>交互作用 (比較一致性效應差值)：<span class='", sig_class, "'>", get_sig_text(p_int), "</span></div>"))
+  cat(paste0("<div>統計量：V = ", stat, ", p = ", format.pval(p_int, digits=3),
+             ifelse(!is.na(n_obs), paste0(", N = ", n_obs), ""),
+             "</div>"))
+    
+  if(p_int < 0.05) {
+    cat("<p class='mt-3'><strong>推論：</strong> 圖片類型顯著調節了一致性效應的大小 (Interation Significant)。</p>")
+  } else {
+    cat("<p class='mt-3'><strong>推論：</strong> 未發現顯著交互作用。</p>")
+  }
+  
+  cat(get_perm_text(perm_img_int))
+  
+} else {
+  cat("無資料。")
+}
+```
+</div>
+
+```{r img_int_plot, fig.height=4.5}
+if (!is.null(beh_trials) && nrow(beh_trials) > 0) {
+  eff_long <- beh_trials %>%
+    filter(Modality == "Image", acc_used == 1, !is.na(rt), !is.na(Image_Type),
+           condition %in% c("Congruent", "Incongruent")) %>%
+    group_by(subject, Image_Type, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = condition, values_from = mean_rt) %>%
+    mutate(effect = Incongruent - Congruent) %>%
+    select(subject, Image_Type, effect)
+  
+  if (nrow(eff_long) > 0) {
+    p <- plotly::plot_ly(
+      eff_long,
+      x = ~Image_Type,
+      y = ~effect,
+      color = ~subject,
+      type = "scatter",
+      mode = "lines+markers",
+      hovertemplate = paste0(
+        "Subject=%{color}<br>Image_Type=%{x}<br>CE=%{y:.3f}s<extra></extra>"
+      )
+    ) %>%
+      plotly::layout(
+        title = "Corresponding Plot: Image Interaction (CE by Image_Type; CE = Incongruent - Congruent)",
+        xaxis = list(title = "Image_Type"),
+        yaxis = list(title = "Congruency Effect (s)")
+      )
+    p
+  }
+}
+```
+
+## 3. 文字實驗：交互作用
+
+<div class="interpretation-card">
+<h3 class="card-title">Valence × Condition</h3>
+```{r txt_val, results='asis'}
+if(!is.null(wc_txt_val)) {
+  p_int <- as.numeric(wc_txt_val$p)
+  stat <- wc_txt_val$statistic
+  n_obs <- if ("n1.y" %in% names(wc_txt_val)) wc_txt_val$n1.y else NA
+  sig_class <- ifelse(p_int < 0.05, "sig", "nonsig")
+  
+  if (is.na(n_obs) && !is.null(beh_trials) && nrow(beh_trials) > 0) {
+    eff_by_val <- beh_trials %>%
+      filter(Modality == "Text", acc_used == 1, !is.na(rt), !is.na(Valence),
+             condition %in% c("Congruent", "Incongruent")) %>%
+      group_by(subject, Valence, condition) %>%
+      summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+      tidyr::pivot_wider(names_from = condition, values_from = mean_rt) %>%
+      mutate(effect = Incongruent - Congruent) %>%
+      select(subject, Valence, effect) %>%
+      tidyr::pivot_wider(names_from = Valence, values_from = effect)
+    n_obs <- eff_by_val %>%
+      transmute(ok = rowSums(!is.na(.)) >= 2) %>%
+      summarise(n = sum(ok)) %>%
+      pull(n)
+  }
+    
+  cat(paste0("<div class='result-line'>交互作用 (比較 CE)：<span class='", sig_class, "'>", get_sig_text(p_int), "</span></div>"))
+  cat(paste0("<div>統計量：V = ", stat, ", p = ", format.pval(p_int, digits=3),
+             ifelse(!is.na(n_obs), paste0(", N = ", n_obs), ""),
+             "</div>"))
+    
+  if(p_int < 0.05) {
+    cat("<p class='mt-3'><strong>推論：</strong> 情緒效價顯著調節了一致性效應的大小。</p>")
+  } else {
+    cat("<p class='mt-3'><strong>推論：</strong> 未發現顯著的 Valence × Condition 交互作用。</p>")
+  }
+  
+  cat(get_perm_text(perm_txt_val))
+  
+} else {
+  cat("無資料。")
+}
+```
+
+<h3 class="card-title mt-4">Arousal × Condition</h3>
+```{r txt_aro, results='asis'}
+if(!is.null(wc_txt_aro)) {
+  p_int <- as.numeric(wc_txt_aro$p)
+  stat <- wc_txt_aro$statistic
+  n_obs <- if ("n1.y" %in% names(wc_txt_aro)) wc_txt_aro$n1.y else NA
+  sig_class <- ifelse(p_int < 0.05, "sig", "nonsig")
+  
+  if (is.na(n_obs) && !is.null(beh_trials) && nrow(beh_trials) > 0) {
+    eff_by_aro <- beh_trials %>%
+      filter(Modality == "Text", acc_used == 1, !is.na(rt), !is.na(Arousal),
+             condition %in% c("Congruent", "Incongruent")) %>%
+      group_by(subject, Arousal, condition) %>%
+      summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+      tidyr::pivot_wider(names_from = condition, values_from = mean_rt) %>%
+      mutate(effect = Incongruent - Congruent) %>%
+      select(subject, Arousal, effect) %>%
+      group_by(subject) %>%
+      summarise(levels = sum(!is.na(effect)), .groups = "drop")
+    n_obs <- sum(eff_by_aro$levels >= 2)
+  }
+    
+  cat(paste0("<div class='result-line'>交互作用 (比較 CE)：<span class='", sig_class, "'>", get_sig_text(p_int), "</span></div>"))
+  cat(paste0("<div>統計量：V = ", stat, ", p = ", format.pval(p_int, digits=3),
+             ifelse(!is.na(n_obs), paste0(", N = ", n_obs), ""),
+             "</div>"))
+    
+  if(p_int < 0.05) {
+    cat("<p class='mt-3'><strong>推論：</strong> 喚醒度顯著調節了一致性效應的大小。</p>")
+  } else {
+    cat("<p class='mt-3'><strong>推論：</strong> 未發現顯著的 Arousal × Condition 交互作用。</p>")
+  }
+  
+  cat(get_perm_text(perm_txt_aro))
+  
+} else {
+  cat("無資料。")
+}
+```
+</div>
+
+```{r txt_val_plot, fig.height=4.5}
+if (!is.null(beh_trials) && nrow(beh_trials) > 0) {
+  eff_val <- beh_trials %>%
+    filter(Modality == "Text", acc_used == 1, !is.na(rt), !is.na(Valence),
+           condition %in% c("Congruent", "Incongruent")) %>%
+    group_by(subject, Valence, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = condition, values_from = mean_rt) %>%
+    mutate(effect = Incongruent - Congruent) %>%
+    select(subject, Valence, effect)
+  
+  if (nrow(eff_val) > 0) {
+    p <- plotly::plot_ly(
+      eff_val,
+      x = ~Valence,
+      y = ~effect,
+      color = ~subject,
+      type = "scatter",
+      mode = "lines+markers",
+      hovertemplate = paste0(
+        "Subject=%{color}<br>Valence=%{x}<br>CE=%{y:.3f}s<extra></extra>"
+      )
+    ) %>%
+      plotly::layout(
+        title = "Corresponding Plot: Valence × Condition (CE by Valence; CE = Incongruent - Congruent)",
+        xaxis = list(title = "Valence"),
+        yaxis = list(title = "Congruency Effect (s)")
+      )
+    p
+  }
+}
+```
+
+```{r txt_aro_plot, fig.height=4.5}
+if (!is.null(beh_trials) && nrow(beh_trials) > 0) {
+  eff_aro <- beh_trials %>%
+    filter(Modality == "Text", acc_used == 1, !is.na(rt), !is.na(Arousal),
+           condition %in% c("Congruent", "Incongruent")) %>%
+    group_by(subject, Arousal, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = condition, values_from = mean_rt) %>%
+    mutate(effect = Incongruent - Congruent) %>%
+    select(subject, Arousal, effect)
+  
+  if (nrow(eff_aro) > 0) {
+    p <- plotly::plot_ly(
+      eff_aro,
+      x = ~Arousal,
+      y = ~effect,
+      color = ~subject,
+      type = "scatter",
+      mode = "lines+markers",
+      hovertemplate = paste0(
+        "Subject=%{color}<br>Arousal=%{x}<br>CE=%{y:.3f}s<extra></extra>"
+      )
+    ) %>%
+      plotly::layout(
+        title = "Corresponding Plot: Arousal × Condition (CE by Arousal; CE = Incongruent - Congruent)",
+        xaxis = list(title = "Arousal"),
+        yaxis = list(title = "Congruency Effect (s)")
+      )
+    p
+  }
+}
+```
+
+## 4. 文字實驗：三階交互作用
+
+<div class="interpretation-card">
+<h3 class="card-title">Valence × Arousal × Condition</h3>
+```{r txt_3way, results='asis'}
+if(!is.null(wc_txt_3way)) {
+  p_int <- as.numeric(wc_txt_3way$p)
+  stat <- wc_txt_3way$statistic
+  n_obs <- if ("n1.y" %in% names(wc_txt_3way)) wc_txt_3way$n1.y else NA
+  sig_class <- ifelse(p_int < 0.05, "sig", "nonsig")
+  
+  if (is.na(n_obs) && !is.null(beh_trials) && nrow(beh_trials) > 0) {
+    n_obs <- beh_trials %>%
+      filter(Modality == "Text", acc_used == 1, !is.na(rt), !is.na(Valence), !is.na(Arousal)) %>%
+      summarise(n = n_distinct(subject)) %>%
+      pull(n)
+  }
+    
+  cat(paste0("<div class='result-line'>三階交互作用：<span class='", sig_class, "'>", get_sig_text(p_int), "</span></div>"))
+  cat(paste0("<div>統計量：V = ", stat, ", p = ", format.pval(p_int, digits=3),
+             ifelse(!is.na(n_obs), paste0(", N = ", n_obs), ""),
+             "</div>"))
+    
+  if(p_int < 0.05) {
+    cat("<p class='mt-3'><strong>推論：</strong> 喚醒度顯著調節了「效價對一致性效應的影響」，支持三階交互作用。</p>")
+  } else {
+    cat("<p class='mt-3'><strong>推論：</strong> 未發現顯著的三階交互作用。</p>")
+  }
+  
+  cat(get_perm_text(perm_txt_3way))
+  
+} else {
+  cat("無資料。")
+}
+```
+</div>
+
+```{r txt_3way_plot, fig.height=5}
+if (!is.null(beh_trials) && nrow(beh_trials) > 0) {
+  txt_subj <- beh_trials %>%
+    filter(Modality == "Text", acc_used == 1, !is.na(rt),
+           !is.na(Valence), !is.na(Arousal),
+           condition %in% c("Congruent", "Incongruent")) %>%
+    group_by(subject, Valence, Arousal, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop")
+  
+  if (nrow(txt_subj) > 0) {
+    txt_sum <- txt_subj %>%
+      group_by(Valence, Arousal, condition) %>%
+      summarise(
+        mean_rt = mean(mean_rt, na.rm = TRUE),
+        se_rt = sd(mean_rt, na.rm = TRUE) / sqrt(n()),
+        .groups = "drop"
+      )
+    
+    make_panel <- function(ar) {
+      d <- txt_sum %>% filter(Arousal == ar)
+      if (nrow(d) == 0) return(NULL)
+      plotly::plot_ly(
+        d,
+        x = ~condition,
+        y = ~mean_rt,
+        color = ~Valence,
+        type = "scatter",
+        mode = "lines+markers",
+        error_y = ~list(array = se_rt, visible = TRUE)
+      ) %>%
+        plotly::layout(
+          title = paste0("Arousal = ", ar),
+          xaxis = list(title = "Condition"),
+          yaxis = list(title = "Mean RT (s)")
+        )
+    }
+    
+    ars <- unique(as.character(txt_sum$Arousal))
+    panels <- lapply(ars, make_panel)
+    panels <- panels[!vapply(panels, is.null, logical(1))]
+    
+    if (length(panels) >= 2) {
+      plotly::subplot(panels, nrows = 1, shareY = TRUE, titleX = TRUE) %>%
+        plotly::layout(title = "Corresponding Plot: Valence × Arousal × Condition (Mean ± SE)")
+    } else if (length(panels) == 1) {
+      panels[[1]] %>% plotly::layout(title = "Corresponding Plot: Valence × Arousal × Condition (Mean ± SE)")
+    }
+  }
+}
+```
+
+<br>
+<a href="../index.html" class="back-btn">返回首頁</a>

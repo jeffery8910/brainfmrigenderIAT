@@ -1,0 +1,299 @@
+---
+title: "行為資料輸出報告書（互動＋圖片版）"
+author: "組員劉鎮臺編寫報告"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+    code_folding: hide
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(plotly)
+library(DT)
+library(htmltools)
+library(scales)
+
+find_first <- function(vec) {
+  for (p in vec) if (!is.na(p) && file.exists(p)) return(p)
+  return(NULL)
+}
+
+analysis_path <- find_first(c(
+  file.path("..", "..", "Thesis_Analysis_Output", "analysis_data.csv"),
+  file.path("..", "Thesis_Analysis_Output", "analysis_data.csv"),
+  file.path("Thesis_Analysis_Output", "analysis_data.csv")
+))
+if (is.null(analysis_path)) stop("找不到 analysis_data.csv（Thesis_Analysis_Output）。")
+
+raw_all <- read.csv(analysis_path, stringsAsFactors = FALSE) %>%
+  mutate(
+    rt = suppressWarnings(as.numeric(rt)),
+    acc = suppressWarnings(as.numeric(acc))
+  )
+
+trials_all <- raw_all %>% filter(is.na(event) | event == "")
+
+rt_min <- 0.2
+rt_max <- 1.5
+
+apply_scenario_rules <- function(trials, exclude_ids, missing_as_error, keep_outliers, rt_min, rt_max) {
+  d <- trials
+  if (length(exclude_ids) > 0) d <- d %>% filter(!subject %in% exclude_ids)
+
+  d <- d %>%
+    mutate(
+      subject = factor(subject),
+      condition = factor(condition, levels = c("Congruent", "Incongruent")),
+      Modality = factor(Modality, levels = c("Image", "Text")),
+      acc_used = if (missing_as_error) ifelse(is.na(acc), 0, acc) else acc
+    )
+
+  if (!keep_outliers) {
+    if (missing_as_error) {
+      d <- d %>% filter(is.na(rt) | (rt >= rt_min & rt <= rt_max))
+    } else {
+      d <- d %>% filter(!is.na(rt), !is.na(acc_used), rt >= rt_min, rt <= rt_max)
+    }
+  } else {
+    if (!missing_as_error) {
+      d <- d %>% filter(!is.na(rt), !is.na(acc_used))
+    }
+  }
+
+  d
+}
+
+scenarios <- list(
+  list(
+    id = "Base",
+    title = "基礎分析 (Base)",
+    exclude_ids = c(),
+    missing_as_error = FALSE,
+    keep_outliers = FALSE,
+    links = list(
+      master_report = "Base/Master_Report_Base.html",
+      interpretation = "Base/Interpretation.html",
+      dashboard = "Base/Behavior_Dashboard.html"
+    )
+  ),
+  list(
+    id = "Exclude_S5S10",
+    title = "排除 S5/S10",
+    exclude_ids = c("S5", "S05", "S005", "S10", "S010"),
+    missing_as_error = FALSE,
+    keep_outliers = FALSE,
+    links = list(
+      master_report = "Exclude_S5S10/Master_Report_Exclude_S5S10.html",
+      interpretation = "Exclude_S5S10/Interpretation.html",
+      dashboard = "Exclude_S5S10/Behavior_Dashboard.html"
+    )
+  ),
+  list(
+    id = "MissingAsError",
+    title = "漏答視為錯誤",
+    exclude_ids = c(),
+    missing_as_error = TRUE,
+    keep_outliers = FALSE,
+    links = list(
+      master_report = "MissingAsError/Master_Report_MissingAsError.html",
+      interpretation = "MissingAsError/Interpretation.html",
+      dashboard = "MissingAsError/Behavior_Dashboard.html"
+    )
+  ),
+  list(
+    id = "NoOutlier_Base",
+    title = "基礎分析（保留離群值）",
+    exclude_ids = c(),
+    missing_as_error = FALSE,
+    keep_outliers = TRUE,
+    links = list(
+      master_report = "NoOutlierExclusion/Report_Base_NoOutlier.html",
+      interpretation = "NoOutlierExclusion/Interpretation_Base.html",
+      dashboard = "NoOutlierExclusion/Behavior_Dashboard_Base.html"
+    )
+  ),
+  list(
+    id = "NoOutlier_Exclude_S5S10",
+    title = "排除 S5/S10（保留離群值）",
+    exclude_ids = c("S5", "S05", "S005", "S10", "S010"),
+    missing_as_error = FALSE,
+    keep_outliers = TRUE,
+    links = list(
+      master_report = "NoOutlierExclusion/Report_Exclude_S5S10_NoOutlier.html",
+      interpretation = "NoOutlierExclusion/Interpretation_Exclude.html",
+      dashboard = "NoOutlierExclusion/Behavior_Dashboard_Exclude.html"
+    )
+  ),
+  list(
+    id = "NoOutlier_MissingAsError",
+    title = "漏答視為錯誤（保留離群值）",
+    exclude_ids = c(),
+    missing_as_error = TRUE,
+    keep_outliers = TRUE,
+    links = list(
+      master_report = "NoOutlierExclusion/Report_MissingAsError_NoOutlier.html",
+      interpretation = "NoOutlierExclusion/Interpretation_Missing.html",
+      dashboard = "NoOutlierExclusion/Behavior_Dashboard_Missing.html"
+    )
+  )
+)
+```
+
+本報告將六種情境的**關鍵輸出圖**整理在同一份文件中：
+
+- 互動式圖：Plotly（離線可開啟）
+- 圖片版：PNG（含數值標記；由 `make_behavior_plots.R` 輸出到 `Behavior_Figures/<Scenario>/`）
+
+```{r book, results='asis'}
+for (scen in scenarios) {
+  cat("\n\n## ", scen$title, "\n\n", sep = "")
+
+  cat("**快速連結**：",
+      sprintf("[完整報告](%s)", scen$links$master_report), "｜",
+      sprintf("[統計解讀](%s)", scen$links$interpretation), "｜",
+      sprintf("[Dashboard](%s)", scen$links$dashboard), "\n\n")
+
+  used <- apply_scenario_rules(
+    trials = trials_all,
+    exclude_ids = scen$exclude_ids,
+    missing_as_error = scen$missing_as_error,
+    keep_outliers = scen$keep_outliers,
+    rt_min = rt_min,
+    rt_max = rt_max
+  )
+
+  summary_tbl <- tibble(
+    Scenario = scen$id,
+    Subjects = n_distinct(used$subject),
+    Trials_Used = nrow(used),
+    Missing_RT = sum(is.na(used$rt)),
+    Missing_ACC = sum(is.na(used$acc_used))
+  )
+
+  print(DT::datatable(summary_tbl, options = list(dom = "t"), rownames = FALSE))
+
+  # --- (0) Demo-style: RT congruency (Subject + Group, split) ---
+  demo_subj_png <- file.path("Behavior_Figures", scen$id, "demo_rt_congruency_subject.png")
+  demo_group_png <- file.path("Behavior_Figures", scen$id, "demo_rt_congruency_group.png")
+  if (file.exists(demo_subj_png) || file.exists(demo_group_png)) {
+    cat("\n\n### Demo 風格：RT 一致性效應（分開）\n\n")
+    if (file.exists(demo_subj_png)) {
+      cat("\n\n**受試者別（Congruent vs Incongruent）**\n\n")
+      cat(sprintf("![](%s)\n\n", demo_subj_png))
+    }
+    if (file.exists(demo_group_png)) {
+      cat("\n\n**群體平均（Congruent vs Incongruent）**\n\n")
+      cat(sprintf("![](%s)\n\n", demo_group_png))
+    }
+  }
+
+  # --- (A) 互動式：雙軸長條（RT vs ACC） ---
+  subj_dual <- used %>%
+    group_by(subject) %>%
+    summarise(
+      acc_mean = mean(acc_used, na.rm = TRUE),
+      rt_mean_correct = mean(rt[acc_used == 1], na.rm = TRUE),
+      n = n(),
+      n_correct = sum(acc_used == 1, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(is.finite(acc_mean), is.finite(rt_mean_correct))
+
+  if (nrow(subj_dual) > 0) {
+    cat("\n\n### Per-Subject: Mean RT (Correct) & Accuracy (Dual-axis)\n\n")
+
+    p_dual <- plotly::plot_ly(subj_dual, x = ~subject) %>%
+      plotly::add_bars(
+        y = ~rt_mean_correct,
+        name = "Mean RT (correct)",
+        yaxis = "y",
+        offsetgroup = "rt",
+        alignmentgroup = "subj",
+        marker = list(color = "rgba(0,175,187,0.85)"),
+        text = ~sprintf("Subject=%s<br>Mean RT=%.3f s<br>n_correct=%d", subject, rt_mean_correct, n_correct),
+        hoverinfo = "text"
+      ) %>%
+      plotly::add_bars(
+        y = ~acc_mean,
+        name = "Accuracy",
+        yaxis = "y2",
+        offsetgroup = "acc",
+        alignmentgroup = "subj",
+        marker = list(color = "rgba(252,78,7,0.55)"),
+        text = ~sprintf("Subject=%s<br>Accuracy=%.1f%%<br>n=%d", subject, acc_mean * 100, n),
+        hoverinfo = "text"
+      ) %>%
+      plotly::layout(
+        title = "Per-Subject: Mean RT (Correct) & Accuracy (Dual-axis)",
+        barmode = "group",
+        xaxis = list(title = "Subject", tickangle = -90),
+        yaxis = list(title = "Mean RT (s)"),
+        yaxis2 = list(title = "Accuracy", overlaying = "y", side = "right", tickformat = ".0%", range = c(0, 1))
+      )
+
+    print(p_dual)
+
+    side_png <- file.path("Behavior_Figures", scen$id, "rt_accuracy_side_by_side.png")
+    if (file.exists(side_png)) {
+      cat("\n\n**圖片版（並排；含數值標記）**\n\n")
+      cat(sprintf("![](%s)\n\n", side_png))
+    }
+
+    png_path <- file.path("Behavior_Figures", scen$id, "dual_rt_accuracy_by_subject.png")
+    if (file.exists(png_path)) {
+      cat("\n\n**圖片版（含數值標記）**\n\n")
+      cat(sprintf("![](%s)\n\n", png_path))
+    } else {
+      cat("\n\n（尚未找到圖片版；請先執行 make_behavior_plots.R 產生靜態圖檔。）\n\n")
+    }
+  }
+
+  # --- (B) 互動式：Subject 平均 RT（Condition × Modality） ---
+  subj_rt <- used %>%
+    filter(acc_used == 1, !is.na(rt), !is.na(Modality), !is.na(condition)) %>%
+    group_by(subject, Modality, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), n = n(), .groups = "drop") %>%
+    mutate(cond_mod = paste0(Modality, " × ", condition))
+
+  if (nrow(subj_rt) > 0) {
+    cat("\n\n### Per-Subject Mean RT (Correct Trials; Condition × Modality)\n\n")
+
+    subj_rt$cond_mod <- factor(subj_rt$cond_mod,
+                               levels = c("Image × Congruent", "Image × Incongruent",
+                                          "Text × Congruent", "Text × Incongruent"))
+
+    p_subj_rt <- plotly::plot_ly(
+      subj_rt,
+      x = ~subject,
+      y = ~mean_rt,
+      color = ~cond_mod,
+      type = "bar",
+      text = ~sprintf("Subject=%s<br>%s<br>n=%d<br>Mean RT=%.3f s", subject, cond_mod, n, mean_rt),
+      hoverinfo = "text"
+    ) %>%
+      plotly::layout(
+        title = "Per-Subject Mean RT (Correct Trials; Condition × Modality)",
+        barmode = "group",
+        xaxis = list(title = "Subject", tickangle = -90),
+        yaxis = list(title = "Mean RT (s)")
+      )
+
+    print(p_subj_rt)
+
+    png_path <- file.path("Behavior_Figures", scen$id, "subject_mean_rt_condition_modality.png")
+    if (file.exists(png_path)) {
+      cat("\n\n**圖片版（含數值標記）**\n\n")
+      cat(sprintf("![](%s)\n\n", png_path))
+    } else {
+      cat("\n\n（尚未找到圖片版；請先執行 make_behavior_plots.R 產生靜態圖檔。）\n\n")
+    }
+  }
+}
+```

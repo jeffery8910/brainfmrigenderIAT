@@ -1,0 +1,18 @@
+/* Basic styling for interpretation reports */
+body {
+  font-family: "Noto Sans TC", "Microsoft JhengHei", "Helvetica Neue", Arial, sans-serif;
+}
+
+table.dataTable {
+  width: 100% !important;
+}
+
+.datatable .dataTable th,
+.datatable .dataTable td {
+  white-space: nowrap;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}

@@ -1,0 +1,885 @@
+---
+title: "一致性與情緒刺激之行為數據分析 (無母數檢定版)"
+subtitle: "Non-Parametric Analysis Report"
+author: "組員劉鎮臺編寫報告"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+    code_folding: hide
+    fig_caption: false
+    df_print: paged
+  word_document:
+    toc: true
+    toc_depth: 3
+    fig_caption: false
+    highlight: tango
+    df_print: kable
+always_allow_html: true
+params:
+  exclude_ids: !r c()
+  missing_as_error: FALSE
+  keep_outliers: FALSE
+  data_source_mode: "auto"
+  xlsx_output_name: "Master_Statistics_NonParametric.xlsx"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.width = 7, fig.height = 4.5, out.width = "100%", fig.align = "center")
+
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(knitr)
+library(kableExtra)
+library(effectsize)
+library(plotly)
+library(DT)
+library(htmltools)
+library(openxlsx)
+library(coin) # Added for permutation tests
+
+# 若在 Windows 且有中文字型，可視需要啟用：
+if (.Platform$OS.type == "windows") {
+  suppressWarnings(try({
+    windowsFonts(SimHei = windowsFont("SimHei"))
+    theme_set(theme_pubr(base_family = "SimHei"))
+  }, silent = TRUE))
+} else {
+theme_set(theme_pubr())
+}
+
+rt_min <- 0.2
+rt_max <- 1.5
+
+# Parameters from render
+exclude_ids_param <- params$exclude_ids
+missing_as_error_param <- params$missing_as_error
+keep_outliers_param <- params$keep_outliers
+data_mode_param <- params$data_source_mode
+xlsx_out_param <- params$xlsx_output_name
+
+# Initialize Excel workbook data list
+excel_sheets <- list()
+
+# Adjusted paths for rendering from subdirectory
+find_first <- function(vec) {
+  for (p in vec) if (!is.na(p) && file.exists(p)) return(p)
+  return(NA_character_)
+}
+data_path_clean  <- find_first(c(file.path("..","..","..","Statistical_Analysis_Implementation","cleaned_trial_level_data.csv"),
+                                 file.path("..","..","Statistical_Analysis_Implementation","cleaned_trial_level_data.csv")))
+data_path_raw    <- find_first(c(file.path("..","..","..","Thesis_Analysis_Output","analysis_data.csv"),
+                                 file.path("..","..","Thesis_Analysis_Output","analysis_data.csv")))
+
+# Data Loading Logic
+df_raw_source <- NULL
+if (file.exists(data_path_raw)) {
+  df_raw_source <- read.csv(data_path_raw, stringsAsFactors = FALSE)
+}
+
+df <- NULL
+
+# 1. Decide Source
+use_clean <- FALSE
+if (data_mode_param == "auto" && file.exists(data_path_clean) && !keep_outliers_param) {
+  use_clean <- TRUE
+}
+
+if (use_clean) {
+  df <- read.csv(data_path_clean)
+  df$subject   <- factor(df$subject)
+  df$Condition <- factor(df$Condition)
+  df$Modality  <- factor(df$Modality)
+  df$Valence   <- factor(df$Valence)
+  df$Arousal   <- factor(df$Arousal)
+  if ("Image_Type" %in% names(df)) df$Image_Type <- factor(df$Image_Type)
+} else {
+  # Load Raw
+  if (is.null(df_raw_source)) stop("找不到原始資料檔案！")
+  
+  df <- df_raw_source
+}
+
+# 2. Preprocessing Pipeline
+# Ensure basic types
+df <- df %>%
+  mutate(
+    subject   = factor(subject),
+    Condition = factor(condition),
+    Modality  = factor(Modality),
+    Valence   = factor(Valence),
+    Arousal   = factor(Arousal),
+    Image_Type = factor(Image_Type),
+    rt  = as.numeric(rt),
+    acc = as.numeric(acc)
+  )
+
+# Raw 資料來源時，先排除程序 event 列（避免把開始/結束當成 trial）
+if ("event" %in% names(df)) {
+  df <- df %>% filter(is.na(event) | event == "")
+}
+
+# 3. Apply Filters / Transformations based on Params
+
+# Exclude Subjects
+if (length(exclude_ids_param) > 0) {
+  df <- df %>% filter(!subject %in% exclude_ids_param)
+}
+
+# Missing As Error
+if (missing_as_error_param) {
+  df <- df %>% mutate(acc = ifelse(is.na(acc), 0, acc))
+}
+
+# Filter RT / ACC NAs and Outliers
+if (missing_as_error_param) {
+  # Keep NA RT if we treat it as error?
+  # Usually MissingAsError implies RT is NA for those trials.
+  # If we filter !is.na(rt), we lose them.
+  # So we keep them if keep_outliers is TRUE?
+  # The original logic kept them in the dataframe but analysis might drop them if RT is needed.
+  # For Accuracy analysis, we need them. For RT analysis, we can't use them (RT is NA).
+  
+  # Logic: Filter rows where BOTH are missing/invalid if strict?
+  # But here we just filter RT range if RT exists.
+  if (!keep_outliers_param) {
+     df <- df %>% filter((rt >= rt_min & rt <= rt_max) | is.na(rt))
+  }
+} else {
+  # Standard cleaning
+  df <- df %>% filter(!is.na(rt), !is.na(acc))
+  
+  if (!keep_outliers_param) {
+    df <- df %>% filter(rt >= rt_min, rt <= rt_max)
+  }
+}
+
+# 4. Outlier Flagging (always do this for reference)
+df <- df %>%
+  group_by(subject) %>%
+  mutate(
+    rt_z        = (rt - mean(rt, na.rm = TRUE)) / sd(rt, na.rm = TRUE),
+    outlier_flag = abs(rt_z) > 2.5
+  ) %>%
+  ungroup()
+
+N_subjects <- n_distinct(df$subject)
+N_trials   <- nrow(df)
+
+# 供後續安全查找：判斷是否有 Image_Type 欄位
+has_image_type <- "Image_Type" %in% names(df)
+
+# Helper for tables
+as_table <- function(.data, caption = "") {
+  if (knitr::is_html_output()) {
+    DT::datatable(.data, options = list(pageLength = 10, scrollX = TRUE), caption = caption)
+  } else {
+    kable(.data, digits = 3, caption = caption) %>%
+      kable_styling(full_width = FALSE)
+  }
+}
+
+# IAT樣式 D 分數計算（以 Congruent vs Incongruent 為相容/不相容）
+compute_iat_scores <- function(dat, rt_min_trim = 0.3, rt_max_trim = 10, err_penalty = 0.6) {
+  dat %>%
+    filter(Condition %in% c("Congruent", "Incongruent")) %>%
+    filter(rt >= rt_min_trim, rt <= rt_max_trim) %>%
+    mutate(rt_adj = ifelse(acc == 1, rt, rt + err_penalty)) %>%
+    group_by(subject) %>%
+    summarise(
+      mean_cong = mean(rt_adj[Condition == "Congruent"], na.rm = TRUE),
+      mean_incong = mean(rt_adj[Condition == "Incongruent"], na.rm = TRUE),
+      sd_pool = sd(rt_adj, na.rm = TRUE),
+      n_cong = sum(Condition == "Congruent"),
+      n_incong = sum(Condition == "Incongruent"),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      D = (mean_incong - mean_cong) / sd_pool
+    ) %>%
+    filter(!is.na(D), is.finite(D))
+}
+
+# 分模態 IAT 樣式 D 分數
+compute_iat_scores_by_modality <- function(dat, rt_min_trim = 0.3, rt_max_trim = 10, err_penalty = 0.6) {
+  dat %>%
+    filter(Condition %in% c("Congruent", "Incongruent")) %>%
+    filter(!is.na(Modality)) %>%
+    filter(rt >= rt_min_trim, rt <= rt_max_trim) %>%
+    mutate(rt_adj = ifelse(acc == 1, rt, rt + err_penalty)) %>%
+    group_by(subject, Modality) %>%
+    summarise(
+      mean_cong   = mean(rt_adj[Condition == "Congruent"], na.rm = TRUE),
+      mean_incong = mean(rt_adj[Condition == "Incongruent"], na.rm = TRUE),
+      sd_pool     = sd(rt_adj, na.rm = TRUE),
+      n_cong      = sum(Condition == "Congruent"),
+      n_incong    = sum(Condition == "Incongruent"),
+      .groups     = "drop"
+    ) %>%
+    mutate(D = (mean_incong - mean_cong) / sd_pool) %>%
+    filter(!is.na(D), is.finite(D))
+}
+
+# === 行為資料整體視覺化 (自動產圖) ===
+fig_dir_candidates <- c(file.path("..", "Behavior_Figures"), "Behavior_Figures")
+fig_dir <- fig_dir_candidates[file.exists(fig_dir_candidates)][1]
+if (is.na(fig_dir)) fig_dir <- fig_dir_candidates[1]
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+viz_script_candidates <- c(file.path("..", "make_behavior_plots.R"), "make_behavior_plots.R")
+viz_script <- viz_script_candidates[file.exists(viz_script_candidates)][1]
+if (!is.na(viz_script)) {
+  try(source(viz_script, local = new.env(parent = emptyenv())), silent = TRUE)
+}
+```
+
+```{r render_time, results='asis'}
+cat(paste0("**建立時間：** ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n"))
+```
+
+# 第一章 緒論 (無母數分析版) 
+
+本報告採用 **無母數統計方法 (Non-parametric Statistics)** 對行為數據進行驗證。相較於傳統 ANOVA，無母數方法（如 Wilcoxon Signed-Rank Test, Friedman Test）不需假設資料呈常態分佈，對於小樣本或反應時間這類常呈偏態分佈的資料更為穩健。
+
+# 第二章 方法
+
+## 2.0 行為資料快速視覺化
+
+```{r behavior_overview, fig.align='center', out.width='100%', fig.show='hold'}
+# 以目前 df 直接繪圖，避免外部路徑失效
+viz_dat <- df
+
+p_acc <- viz_dat %>%
+  group_by(Condition, Modality) %>%
+  summarise(acc_mean = mean(acc, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = Condition, y = acc_mean, fill = Modality)) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  geom_text(aes(label = scales::percent(acc_mean, accuracy = 0.1)),
+            position = position_dodge(width = 0.8), vjust = -0.4, size = 3) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+  labs(title = "Accuracy: Condition × Modality", x = "Condition", y = "Accuracy") +
+  theme_minimal()
+
+p_rt <- viz_dat %>%
+  ggplot(aes(x = Condition, y = rt, fill = Condition)) +
+  geom_violin(trim = FALSE, alpha = 0.3) +
+  geom_boxplot(width = 0.2, outlier.alpha = 0.2, fill = "white") +
+  labs(title = "RT Distribution (Violin + Box)", x = "Condition", y = "RT (s)") +
+  theme_minimal()
+
+p_eff <- viz_dat %>%
+  filter(acc == 1) %>%
+  group_by(subject, Condition) %>%
+  summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = Condition, values_from = mean_rt) %>%
+  mutate(effect = Incongruent - Congruent) %>%
+  ggplot(aes(x = reorder(subject, effect), y = effect, fill = effect > 0)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("#00AFBB", "#FC4E07"), guide = "none") +
+  labs(title = "Congruency Effect (Incongruent - Congruent RT)", x = "Subject", y = "RT Diff (s)") +
+  theme_minimal()
+
+p_hist <- viz_dat %>%
+  ggplot(aes(x = rt)) +
+  geom_histogram(bins = 40, fill = "#00AFBB", alpha = 0.7, color = "white") +
+  labs(title = "RT Histogram (All Trials)", x = "RT (s)", y = "Count") +
+  theme_minimal()
+
+# 依序列印四張圖
+print(p_acc)
+print(p_rt)
+print(p_eff)
+print(p_hist)
+```
+
+## 2.1 統計分析策略
+
+1.  **一致性主效應**：使用 **Wilcoxon Signed-Rank Test** 比較 Congruent 與 Incongruent 條件下的反應時間。
+2.  **圖片實驗 (Image)**：
+    *   **Friedman Test**：檢驗 4 個實驗條件 (2 Condition × 2 Image_Type) 間是否有整體差異。
+    *   **交互作用檢驗 (Wilcoxon on Differences)**：計算一致性效應 (Incongruent - Congruent)，並使用 Wilcoxon Signed-Rank Test 比較不同圖片類型間的一致性效應大小。
+3.  **文字實驗 (Text)**：
+    *   **Friedman Test**：檢驗 8 個實驗條件 (2 Condition × 2 Valence × 2 Arousal) 間是否有整體差異。
+    *   **交互作用檢驗**：同樣透過計算一致性效應的差值，檢驗 Valence 與 Arousal 的調節效果。
+4.  **類別關聯分析**：維持使用卡方檢定 (Chi-square)，必要時補充 Fisher's Exact Test。
+
+# 第三章 結果
+
+## 3.1 一致性主效應 (Wilcoxon Signed-Rank Test)
+
+```{r cong_effect}
+subj_cong <- df %>%
+  group_by(subject, Condition) %>%
+  summarise(
+    mean_rt  = mean(rt[acc == 1], na.rm = TRUE),
+    mean_acc = mean(acc, na.rm = TRUE),
+    .groups  = "drop"
+  )
+
+# Wilcoxon Test (rstatix)
+wc_cong <- subj_cong %>%
+  rstatix::wilcox_test(mean_rt ~ Condition, paired = TRUE, detailed = TRUE) %>%
+  add_significance()
+
+# Effect Size (Wilcoxon effect size r)
+# r = Z / sqrt(N), where N is total observations. rstatix calculates this automatically.
+wc_eff <- subj_cong %>%
+  rstatix::wilcox_effsize(mean_rt ~ Condition, paired = TRUE) %>%
+  select(-any_of("n")) # Remove n to avoid duplicate n.x/n.y columns
+
+# Merge for display
+wc_res <- wc_cong %>%
+  left_join(wc_eff, by = c(".y.", "group1", "group2"))
+
+# Save to Excel list
+excel_sheets[["Wilcoxon_Congruency"]] <- wc_res
+
+# --- Permutation Test (coin package) ---
+# Exact Wilcoxon-Mann-Whitney / Signed-Rank Test via Permutation
+# Ideally robust for small samples.
+# Coin requires factors.
+subj_cong$Condition <- as.factor(subj_cong$Condition)
+
+# Paired test using coin::wilcox_test with distribution="exact" (if possible) or "approximate"
+# Note: coin's syntax is y ~ x | block for paired. Here 'subject' is the block.
+perm_test <- tryCatch({
+  coin::wilcox_test(mean_rt ~ Condition | subject, data = subj_cong, distribution = "exact", paired = TRUE)
+}, error = function(e) {
+  # Fallback to asymptotic if exact fails (e.g. ties or too large N)
+  coin::wilcox_test(mean_rt ~ Condition | subject, data = subj_cong, distribution = "asymptotic", paired = TRUE)
+})
+
+perm_cong <- data.frame(
+  Test = "Permutation Wilcoxon-Signed-Rank",
+  Statistic = statistic(perm_test),
+  P_Value = coin::pvalue(perm_test),
+  Method = "Coin Package (Exact/Asymptotic)"
+)
+excel_sheets[["Permutation_Congruency"]] <- perm_cong
+
+as_table(wc_res, caption = "Wilcoxon Signed-Rank Test: Congruent vs Incongruent (RT)")
+```
+
+### 一致性條件差異 (Boxplot + Jitter)
+
+```{r cong_plot}
+# Prepare stats for plotting
+wc_viz <- wc_res %>%
+  add_xy_position(x = "Condition")
+
+ggpaired(subj_cong, x = "Condition", y = "mean_rt", 
+         order = c("Congruent", "Incongruent"),
+         color = "Condition", line.color = "gray", line.size = 0.4,
+         palette = c("#00AFBB", "#FC4E07"),
+         ylab = "Mean RT (s)", xlab = "Condition") +
+  stat_pvalue_manual(wc_viz, label = "p.signif", tip.length = 0.01)
+```
+
+### 3.1b IAT 樣式 D 分數（標準化一致性效應）
+
+```{r iat_d_score}
+iat_scores <- compute_iat_scores(df)
+
+if (nrow(iat_scores) > 0) {
+  excel_sheets[["IAT_Dscore"]] <- iat_scores
+  
+  summary_iat <- iat_scores %>%
+    summarise(
+      N = n(),
+      mean_D = mean(D),
+      sd_D = sd(D),
+      min_D = min(D),
+      max_D = max(D)
+    )
+  
+  as_table(iat_scores, caption = "各受試者 IAT D 分數（Incongruent - Congruent）")
+  as_table(summary_iat, caption = "D 分數摘要統計")
+} else {
+  cat("無法計算 D 分數（可能缺少條件或樣本數不足）。")
+}
+```
+
+```{r iat_d_plot, fig.height=4.5, fig.width=7}
+if (exists("iat_scores") && nrow(iat_scores) > 0) {
+  cuts <- c(-Inf, -0.65, -0.35, -0.15, 0, 0.15, 0.35, 0.65, Inf)
+  labs_band <- c("強偏 Incong", "中偏 Incong", "微偏 Incong",
+                 "近中性 (-)", "近中性 (+)",
+                 "微偏 Cong", "中偏 Cong", "強偏 Cong")
+  cols_band <- c(
+    "強偏 Incong"="#08306B","中偏 Incong"="#2171B5","微偏 Incong"="#6BAED6",
+    "近中性 (-)"="#BDBDBD","近中性 (+)"="#BDBDBD",
+    "微偏 Cong"="#FDAE6B","中偏 Cong"="#F16913","強偏 Cong"="#A63603"
+  )
+  
+  plot_df <- iat_scores %>%
+    mutate(band = cut(D, breaks = cuts, labels = labs_band, right = FALSE)) %>%
+    arrange(D)
+  
+  ggplot(plot_df, aes(x = reorder(subject, D), y = D, color = band)) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -0.15, ymax = 0.15,
+             fill = "gray90", alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = c(-0.15, 0.15, -0.35, 0.35, -0.65, 0.65),
+               linetype = "dotted", color = "gray70") +
+    geom_segment(aes(xend = subject, y = 0, yend = D), linewidth = 1.2) +
+    geom_point(size = 4) +
+    geom_text(aes(label = sprintf('%.2f', D)),
+              hjust = ifelse(plot_df$D >= 0, -0.15, 1.15), size = 3, color = "black") +
+    coord_flip() +
+    scale_color_manual(values = cols_band, guide = "none") +
+    labs(
+      title = "IAT-style D Score (Sorted by Subject)",
+      subtitle = paste0("0 為中性；虛線為效應區間（±0.15 / 0.35 / 0.65），N = ", nrow(plot_df)),
+      x = "Subject", y = "D (Incongruent - Congruent)"
+    ) +
+    theme_minimal()
+}
+```
+
+### 3.1c 分模態 IAT D 分數（Image vs Text）
+
+```{r iat_d_modality_plot, fig.height=4.5, fig.width=6.5}
+iat_mod_scores <- compute_iat_scores_by_modality(df)
+
+if (nrow(iat_mod_scores) > 0) {
+  excel_sheets[["IAT_Dscore_Modality"]] <- iat_mod_scores
+  
+  mod_sum <- iat_mod_scores %>%
+    group_by(Modality) %>%
+    summarise(
+      N = n(),
+      mean_D = mean(D),
+      sd_D = sd(D),
+      se_D = sd_D / sqrt(N),
+      ci_low = mean_D - qt(0.975, N - 1) * se_D,
+      ci_high = mean_D + qt(0.975, N - 1) * se_D,
+      .groups = "drop"
+    )
+  
+  ggplot(iat_mod_scores, aes(x = Modality, y = D, group = subject)) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -0.15, ymax = 0.15,
+             fill = "gray90", alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = c(-0.15, 0.15), linetype = "dotted", color = "gray70") +
+    geom_line(color = "gray70", alpha = 0.6) +
+    geom_point(aes(color = Modality), size = 3) +
+    geom_errorbar(data = mod_sum, aes(x = Modality, ymin = ci_low, ymax = ci_high),
+                  inherit.aes = FALSE, width = 0.1, color = "black") +
+    geom_point(data = mod_sum, aes(x = Modality, y = mean_D),
+               inherit.aes = FALSE, shape = 18, size = 4, color = "black") +
+    scale_color_manual(values = c("Image" = "#00AFBB", "Text" = "#FC4E07")) +
+    labs(
+      title = "D Score by Modality: Image vs Text",
+      subtitle = "Gray band: |D| < 0.15 (ROPE); black diamond = mean ± 95% CI",
+      x = "Modality",
+      y = "D (Incongruent - Congruent)"
+    ) +
+    theme_minimal()
+} else {
+  cat("無法計算分模態 D 分數（可能缺少條件或樣本數不足）。")
+}
+```
+
+## 3.2 圖片實驗：無母數交互作用分析
+
+### 3.2.1 整體差異 (Friedman Test)
+
+```{r image_friedman}
+df_img <- df %>% filter(Modality == "Image")
+
+if(nrow(df_img) > 0 && has_image_type) {
+  # Friedman test requires wide format or specific long format structure
+  # We have long format: subject, Condition, Image_Type
+  # We create a single factor "Group" = Condition + Image_Type
+  
+  subj_img <- df_img %>%
+    group_by(subject, Condition, Image_Type) %>%
+    summarise(mean_rt = mean(rt[acc == 1], na.rm = TRUE), .groups = "drop") %>%
+    filter(!is.na(mean_rt)) %>% # Remove NaN if 0 correct trials
+    mutate(Group = paste(Image_Type, Condition, sep = "_"))
+  
+  # Ensure complete block design (subjects must have all levels)
+  # Expected levels = 4 (2 Image_Type * 2 Condition)
+  # Use hardcoded 4 to ensure we have ALL experimental conditions
+  subj_counts <- subj_img %>% count(subject)
+  complete_subjs <- subj_counts %>% filter(n == 4) %>% pull(subject)
+  
+  if(length(complete_subjs) > 1) {
+    subj_img_complete <- subj_img %>% 
+      filter(subject %in% complete_subjs) %>%
+      ungroup() %>%
+      mutate(
+        subject = droplevels(subject),
+        Group = droplevels(as.factor(Group))
+      ) %>%
+      arrange(subject, Group)
+    
+    friedman_res <- subj_img_complete %>%
+      rstatix::friedman_test(mean_rt ~ Group | subject)
+    
+    excel_sheets[["Friedman_Image"]] <- friedman_res
+    as_table(friedman_res, caption = paste0("Friedman Test (Image Experiment) [N=", length(complete_subjs), "]"))
+  } else {
+    cat("圖片實驗資料不足以進行 Friedman 檢定 (完整數據受試者少於 2 位)。")
+  }
+  
+} else {
+  cat("無圖片實驗資料。")
+}
+```
+
+### 3.2.2 交互作用檢驗 (比較一致性效應)
+
+我們計算每個受試者在兩種圖片類型下的一致性效應 (Incongruent - Congruent)，並比較這兩個差值。
+
+```{r image_interaction_wilcox}
+if(nrow(df_img) > 0 && has_image_type) {
+  # Calculate Congruency Effect (CE) per Image Type per Subject
+  # subj_img is already summarized by Condition/Image_Type
+  
+  img_ce <- subj_img %>%
+    select(subject, Condition, Image_Type, mean_rt) %>%
+    pivot_wider(names_from = Condition, values_from = mean_rt) %>%
+    mutate(CE = Incongruent - Congruent) %>%
+    filter(!is.na(CE)) # Remove if one condition was missing
+  
+  # Check complete pairs for Image_Type
+  # We need subjects having BOTH Image Types
+  ce_counts <- img_ce %>% count(subject)
+  complete_ce_subjs <- ce_counts %>% filter(n == 2) %>% pull(subject)
+  
+  if(length(complete_ce_subjs) > 0) {
+    img_ce_complete <- img_ce %>% filter(subject %in% complete_ce_subjs)
+    
+    # Now compare CE between Image Types (Paired Wilcoxon)
+    # Ensure data is sorted by Image_Type then subject to ensure aligned vectors
+    img_ce_complete <- img_ce_complete %>% 
+      ungroup() %>%
+      mutate(Image_Type = droplevels(factor(Image_Type))) %>%
+      arrange(Image_Type, subject)
+    
+    wc_img_int <- img_ce_complete %>%
+      rstatix::wilcox_test(CE ~ Image_Type, paired = TRUE) %>%
+      add_significance()
+    
+    wc_img_eff <- img_ce_complete %>%
+      rstatix::wilcox_effsize(CE ~ Image_Type, paired = TRUE) %>%
+      select(-any_of("n"))
+    
+    wc_img_res <- wc_img_int %>% left_join(wc_img_eff, by = c(".y.", "group1", "group2"))
+    
+    excel_sheets[["Wilcoxon_Image_Interaction"]] <- wc_img_res
+    
+    # --- Permutation Test ---
+    img_ce_complete$Image_Type <- as.factor(img_ce_complete$Image_Type)
+    img_ce_complete$subject <- as.factor(img_ce_complete$subject)
+    
+    perm_img_int <- tryCatch({
+      coin::wilcox_test(CE ~ Image_Type | subject, data = img_ce_complete, distribution = "exact", paired = TRUE)
+    }, error = function(e) {
+      coin::wilcox_test(CE ~ Image_Type | subject, data = img_ce_complete, distribution = "asymptotic", paired = TRUE)
+    })
+    
+    perm_img_res <- data.frame(
+      Test = "Permutation Interaction (Image)",
+      Statistic = statistic(perm_img_int),
+      P_Value = coin::pvalue(perm_img_int)
+    )
+    excel_sheets[["Permutation_Image_Interaction"]] <- perm_img_res
+
+    as_table(wc_img_res, caption = paste0("交互作用檢驗：比較不同圖片類型之一致性效應 (CE) [N=", length(complete_ce_subjs), "]"))
+  } else {
+    cat("資料不足以進行圖片類型交互作用檢定 (無受試者擁有完整配對數據)。")
+  }
+}
+```
+
+### 圖片類型對一致性效應 (CE) 的影響
+
+```{r image_int_plot}
+if(nrow(df_img) > 0 && has_image_type && exists("img_ce_complete")) {
+  
+  # Prepare stats for plotting
+  wc_img_viz <- wc_img_res %>% 
+    add_xy_position(x = "Image_Type")
+
+  ggpaired(img_ce_complete, x = "Image_Type", y = "CE",
+           color = "Image_Type", line.color = "gray",
+           ylab = "Congruency Effect (s) [Inc - Con]", xlab = "Image Type") +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    stat_pvalue_manual(wc_img_viz, label = "p.signif", tip.length = 0.01)
+}
+```
+
+## 3.3 文字實驗：無母數交互作用分析
+
+### 3.3.1 整體差異 (Friedman Test)
+
+```{r text_friedman}
+df_txt <- df %>% filter(Modality == "Text")
+
+if(nrow(df_txt) > 0) {
+  subj_txt <- df_txt %>%
+    group_by(subject, Condition, Valence, Arousal) %>%
+    summarise(mean_rt = mean(rt[acc == 1], na.rm = TRUE), .groups = "drop") %>%
+    filter(!is.na(mean_rt)) %>% # Remove NaN
+    mutate(Group = paste(Valence, Arousal, Condition, sep = "_"))
+  
+  # Ensure complete block design
+  # Expected levels = 8 (2 Val * 2 Aro * 2 Cond)
+  n_levels_txt <- n_distinct(subj_txt$Group)
+  subj_counts_txt <- subj_txt %>% count(subject)
+  complete_subjs_txt <- subj_counts_txt %>% filter(n == n_levels_txt) %>% pull(subject)
+  
+  if(length(complete_subjs_txt) > 0) {
+    subj_txt_complete <- subj_txt %>% 
+      filter(subject %in% complete_subjs_txt) %>%
+      ungroup() %>%
+      mutate(
+        subject = droplevels(subject),
+        Group = droplevels(as.factor(Group))
+      ) %>%
+      arrange(subject, Group)
+    
+    friedman_txt <- subj_txt_complete %>%
+      rstatix::friedman_test(mean_rt ~ Group | subject)
+    
+    excel_sheets[["Friedman_Text"]] <- friedman_txt
+    as_table(friedman_txt, caption = paste0("Friedman Test (Text Experiment) [N=", length(complete_subjs_txt), "]"))
+  } else {
+    cat("文字實驗資料不足以進行 Friedman 檢定 (無受試者擁有完整 8 個條件數據)。")
+  }
+} else {
+  cat("無文字實驗資料。")
+}
+```
+
+### 3.3.2 交互作用檢驗
+
+**1. Valence × Condition (情緒效價是否調節一致性效應?)**
+
+```{r text_int_val}
+if(nrow(df_txt) > 0) {
+  # Calculate CE for each Valence
+  # subj_txt has Condition, Valence, Arousal
+  
+  # Pivot to get CE
+  txt_ce_raw <- subj_txt %>%
+    select(subject, Condition, Valence, Arousal, mean_rt) %>%
+    pivot_wider(names_from = Condition, values_from = mean_rt) %>%
+    mutate(CE = Incongruent - Congruent) %>%
+    filter(!is.na(CE))
+  
+  # Average CE by Valence (collapsing Arousal)
+  txt_ce_val <- txt_ce_raw %>%
+    group_by(subject, Valence) %>%
+    summarise(mean_CE = mean(CE, na.rm = TRUE), .groups = "drop")
+  
+  # Check complete pairs (Pos vs Neg)
+  val_counts <- txt_ce_val %>% count(subject)
+  complete_val_subjs <- val_counts %>% filter(n == 2) %>% pull(subject)
+  
+  if(length(complete_val_subjs) > 0) {
+    txt_ce_val_complete <- txt_ce_val %>% 
+      filter(subject %in% complete_val_subjs) %>%
+      ungroup() %>%
+      mutate(Valence = droplevels(factor(Valence))) %>%
+      arrange(Valence, subject)
+    
+    wc_val_int <- txt_ce_val_complete %>%
+      rstatix::wilcox_test(mean_CE ~ Valence, paired = TRUE) %>%
+      add_significance()
+    
+    wc_val_eff <- txt_ce_val_complete %>%
+      rstatix::wilcox_effsize(mean_CE ~ Valence, paired = TRUE) %>%
+      select(-any_of("n"))
+
+    wc_val_res <- wc_val_int %>% left_join(wc_val_eff, by = c(".y.", "group1", "group2"))
+    
+    excel_sheets[["Wilcoxon_Text_Valence_Int"]] <- wc_val_res
+    
+    # --- Permutation Test ---
+    txt_ce_val_complete$Valence <- as.factor(txt_ce_val_complete$Valence)
+    txt_ce_val_complete$subject <- as.factor(txt_ce_val_complete$subject)
+    
+    perm_val_int <- tryCatch({
+      coin::wilcox_test(mean_CE ~ Valence | subject, data = txt_ce_val_complete, distribution = "exact", paired = TRUE)
+    }, error = function(e) {
+       coin::wilcox_test(mean_CE ~ Valence | subject, data = txt_ce_val_complete, distribution = "asymptotic", paired = TRUE)
+    })
+    
+    perm_val_res <- data.frame(
+      Test = "Permutation Interaction (Valence)",
+      Statistic = statistic(perm_val_int),
+      P_Value = coin::pvalue(perm_val_int)
+    )
+    excel_sheets[["Permutation_Text_Valence"]] <- perm_val_res
+    
+    as_table(wc_val_res, caption = paste0("交互作用：Valence × Condition (比較 CE) [N=", length(complete_val_subjs), "]"))
+  } else {
+    cat("資料不足以進行 Valence 交互作用檢定。")
+  }
+}
+```
+
+**2. Arousal × Condition (喚醒度是否調節一致性效應?)**
+
+```{r text_int_aro}
+if(nrow(df_txt) > 0) {
+  # Average CE by Arousal (collapsing Valence)
+  txt_ce_aro <- txt_ce_raw %>%
+    group_by(subject, Arousal) %>%
+    summarise(mean_CE = mean(CE, na.rm = TRUE), .groups = "drop")
+  
+  # Check complete pairs (High vs Low)
+  aro_counts <- txt_ce_aro %>% count(subject)
+  complete_aro_subjs <- aro_counts %>% filter(n == 2) %>% pull(subject)
+  
+  if(length(complete_aro_subjs) > 0) {
+    txt_ce_aro_complete <- txt_ce_aro %>% 
+      filter(subject %in% complete_aro_subjs) %>%
+      ungroup() %>%
+      mutate(Arousal = droplevels(factor(Arousal))) %>%
+      arrange(Arousal, subject)
+    
+    wc_aro_int <- txt_ce_aro_complete %>%
+      rstatix::wilcox_test(mean_CE ~ Arousal, paired = TRUE) %>%
+      add_significance()
+      
+    wc_aro_eff <- txt_ce_aro_complete %>%
+      rstatix::wilcox_effsize(mean_CE ~ Arousal, paired = TRUE) %>%
+      select(-any_of("n"))
+
+    wc_aro_res <- wc_aro_int %>% left_join(wc_aro_eff, by = c(".y.", "group1", "group2"))
+    
+    excel_sheets[["Wilcoxon_Text_Arousal_Int"]] <- wc_aro_res
+    
+    # --- Permutation Test ---
+    txt_ce_aro_complete$Arousal <- as.factor(txt_ce_aro_complete$Arousal)
+    txt_ce_aro_complete$subject <- as.factor(txt_ce_aro_complete$subject)
+    
+    perm_aro_int <- tryCatch({
+      coin::wilcox_test(mean_CE ~ Arousal | subject, data = txt_ce_aro_complete, distribution = "exact", paired = TRUE)
+    }, error = function(e) {
+       coin::wilcox_test(mean_CE ~ Arousal | subject, data = txt_ce_aro_complete, distribution = "asymptotic", paired = TRUE)
+    })
+    
+    perm_aro_res <- data.frame(
+      Test = "Permutation Interaction (Arousal)",
+      Statistic = statistic(perm_aro_int),
+      P_Value = coin::pvalue(perm_aro_int)
+    )
+    excel_sheets[["Permutation_Text_Arousal"]] <- perm_aro_res
+    
+    as_table(wc_aro_res, caption = paste0("交互作用：Arousal × Condition (比較 CE) [N=", length(complete_aro_subjs), "]"))
+  } else {
+    cat("資料不足以進行 Arousal 交互作用檢定。")
+  }
+}
+```
+
+**3. Valence × Arousal × Condition (三階交互作用)**
+
+檢驗「不同喚醒度下，效價對一致性效應的調節是否不同」。
+計算指標：`Interaction_Score = CE(Positive) - CE(Negative)`。
+比較 `Interaction_Score` 在 High Arousal 與 Low Arousal 間的差異。
+
+```{r text_int_3way}
+if(nrow(df_txt) > 0) {
+  # txt_ce_raw has CE for each Valence/Arousal
+  # Pivot to get CE_Pos and CE_Neg columns
+  # We need wide format for Valence to calc difference, then check Arousal pairs
+  
+  # Check if we have both Valences for each Subject+Arousal
+  txt_3way_prep <- txt_ce_raw %>%
+    select(subject, Arousal, Valence, CE) %>%
+    pivot_wider(names_from = Valence, values_from = CE, names_prefix = "CE_") %>%
+    filter(!is.na(CE_Positive), !is.na(CE_Negative)) %>%
+    mutate(Val_Effect_on_CE = CE_Positive - CE_Negative)
+  
+  # Now compare Val_Effect_on_CE between High and Low Arousal
+  # Check pairs of Arousal
+  aro_3way_counts <- txt_3way_prep %>% count(subject)
+  complete_3way_subjs <- aro_3way_counts %>% filter(n == 2) %>% pull(subject)
+  
+  if(length(complete_3way_subjs) > 0) {
+    txt_3way_complete <- txt_3way_prep %>% 
+      filter(subject %in% complete_3way_subjs) %>%
+      ungroup() %>%
+      mutate(Arousal = droplevels(factor(Arousal))) %>%
+      arrange(Arousal, subject)
+    
+    wc_3way <- txt_3way_complete %>%
+      rstatix::wilcox_test(Val_Effect_on_CE ~ Arousal, paired = TRUE) %>%
+      add_significance()
+      
+    wc_3way_eff <- txt_3way_complete %>%
+      rstatix::wilcox_effsize(Val_Effect_on_CE ~ Arousal, paired = TRUE) %>%
+      select(-any_of("n"))
+
+    wc_3way_res <- wc_3way %>% left_join(wc_3way_eff, by = c(".y.", "group1", "group2"))
+    
+    excel_sheets[["Wilcoxon_Text_3Way_Int"]] <- wc_3way_res
+    
+    # --- Permutation Test ---
+    txt_3way_complete$Arousal <- as.factor(txt_3way_complete$Arousal)
+    txt_3way_complete$subject <- as.factor(txt_3way_complete$subject)
+    
+    perm_3way_int <- tryCatch({
+      coin::wilcox_test(Val_Effect_on_CE ~ Arousal | subject, data = txt_3way_complete, distribution = "exact", paired = TRUE)
+    }, error = function(e) {
+       coin::wilcox_test(Val_Effect_on_CE ~ Arousal | subject, data = txt_3way_complete, distribution = "asymptotic", paired = TRUE)
+    })
+    
+    perm_3way_res <- data.frame(
+      Test = "Permutation 3-Way Interaction",
+      Statistic = statistic(perm_3way_int),
+      P_Value = coin::pvalue(perm_3way_int)
+    )
+    excel_sheets[["Permutation_Text_3Way"]] <- perm_3way_res
+    
+    as_table(wc_3way_res, caption = paste0("三階交互作用：(CE_Pos - CE_Neg) 在 High vs Low Arousal 間的差異 [N=", length(complete_3way_subjs), "]"))
+  } else {
+    cat("資料不足以進行三階交互作用檢定。")
+  }
+}
+```
+
+## 3.4 類別關聯 (卡方檢定)
+
+```{r chi_sq}
+df_chi <- df %>%
+  mutate(Result = if_else(acc == 1, "Correct", "Error"))
+
+tbl <- table(df_chi$Condition, df_chi$Result)
+chi_res <- chisq.test(tbl)
+
+excel_sheets[["Chi_Square_Table"]] <- as.data.frame.matrix(tbl)
+excel_sheets[["Chi_Square_Test"]] <- broom::tidy(chi_res)
+
+as_table(as.data.frame.matrix(tbl), caption = "Condition × Result")
+```
+
+若樣本數不足 (期望值 < 5)，以下提供 Fisher's Exact Test 結果：
+
+```{r fisher}
+fisher_res <- fisher.test(tbl)
+fisher_tidy <- broom::tidy(fisher_res)
+excel_sheets[["Fisher_Test"]] <- fisher_tidy
+
+as_table(fisher_tidy, caption = "Fisher's Exact Test")
+```
+
+# 第四章 匯出結果
+
+```{r export_xlsx}
+xlsx_name <- xlsx_out_param
+if(is.null(xlsx_name) || xlsx_name == "") xlsx_name <- "Master_Statistics_NonParametric.xlsx"
+
+# Try to write
+write.xlsx(excel_sheets, xlsx_name)
+cat(paste0("無母數統計結果已匯出至：", xlsx_name))
+```

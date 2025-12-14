@@ -1,0 +1,572 @@
+---
+title: "前導研究深度洞察報告 (Pilot Insight)"
+subtitle: "效果量估計與貝氏因子分析"
+author: "組員劉鎮臺編寫報告"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: journal
+    code_folding: hide
+    df_print: paged
+params:
+  exclude_ids: !r c()
+  missing_as_error: FALSE
+  keep_outliers: FALSE
+  data_source_mode: "auto"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.width = 7, fig.height = 5, out.width = "100%", fig.align = "center")
+
+library(tidyverse)
+library(dabestr)
+library(BayesFactor)
+library(ggpubr)
+library(knitr)
+library(kableExtra)
+library(effectsize)
+library(plotly)
+library(DT)
+library(htmltools)
+
+# Windows Font Handling
+if (.Platform$OS.type == "windows") {
+  suppressWarnings(try({
+    windowsFonts(SimHei = windowsFont("SimHei"))
+    theme_set(theme_pubr(base_family = "SimHei"))
+  }, silent = TRUE))
+} else {
+  theme_set(theme_pubr())
+}
+
+# Data Loading (Same logic as previous reports)
+rt_min <- 0.2
+rt_max <- 1.5
+
+exclude_ids_param <- params$exclude_ids
+missing_as_error_param <- params$missing_as_error
+keep_outliers_param <- params$keep_outliers
+data_mode_param <- params$data_source_mode
+
+find_first <- function(vec) {
+  for (p in vec) if (!is.na(p) && file.exists(p)) return(p)
+  return(NA_character_)
+}
+data_path_clean  <- find_first(c(file.path("..","..","..","Statistical_Analysis_Implementation","cleaned_trial_level_data.csv"),
+                                 file.path("..","..","Statistical_Analysis_Implementation","cleaned_trial_level_data.csv")))
+data_path_raw    <- find_first(c(file.path("..","..","..","Thesis_Analysis_Output","analysis_data.csv"),
+                                 file.path("..","..","Thesis_Analysis_Output","analysis_data.csv")))
+
+df_raw_source <- NULL
+if (file.exists(data_path_raw)) {
+  df_raw_source <- read.csv(data_path_raw, stringsAsFactors = FALSE)
+}
+
+df <- NULL
+use_clean <- FALSE
+if (data_mode_param == "auto" && file.exists(data_path_clean) && !keep_outliers_param) {
+  use_clean <- TRUE
+}
+
+if (use_clean) {
+  df <- read.csv(data_path_clean)
+  df$subject   <- factor(df$subject)
+  df$Condition <- factor(df$Condition)
+  df$Modality  <- factor(df$Modality)
+  df$Valence   <- factor(df$Valence)
+  df$Arousal   <- factor(df$Arousal)
+  if ("Image_Type" %in% names(df)) df$Image_Type <- factor(df$Image_Type)
+} else {
+  if (is.null(df_raw_source)) stop("找不到原始資料檔案！")
+  df <- df_raw_source
+}
+
+df <- df %>%
+  mutate(
+    subject   = factor(subject),
+    Condition = factor(condition),
+    Modality  = factor(Modality),
+    Valence   = factor(Valence),
+    Arousal   = factor(Arousal),
+    Image_Type = factor(Image_Type),
+    rt  = as.numeric(rt),
+    acc = as.numeric(acc)
+  )
+
+# Raw 資料來源時，先排除程序 event 列（避免把開始/結束當成 trial）
+if ("event" %in% names(df)) {
+  df <- df %>% filter(is.na(event) | event == "")
+}
+
+if (length(exclude_ids_param) > 0) {
+  df <- df %>% filter(!subject %in% exclude_ids_param)
+}
+
+if (missing_as_error_param) {
+  df <- df %>% mutate(acc = ifelse(is.na(acc), 0, acc))
+  if (!keep_outliers_param) {
+     df <- df %>% filter((rt >= rt_min & rt <= rt_max) | is.na(rt))
+  }
+} else {
+  df <- df %>% filter(!is.na(rt), !is.na(acc))
+  if (!keep_outliers_param) {
+    df <- df %>% filter(rt >= rt_min, rt <= rt_max)
+  }
+}
+
+# Prepare Subject-Level Data
+subj_cong <- df %>%
+  group_by(subject, Condition) %>%
+  summarise(mean_rt = mean(rt[acc == 1], na.rm = TRUE), .groups = "drop") %>%
+  mutate(mean_rt = as.numeric(mean_rt))
+
+# Wide format for diff calculation
+subj_wide <- subj_cong %>%
+  pivot_wider(names_from = Condition, values_from = mean_rt) %>%
+  mutate(Diff = Incongruent - Congruent)
+
+# Helper for Tables
+as_table <- function(.data, caption = "") {
+  if (knitr::is_html_output()) {
+    DT::datatable(.data, options = list(pageLength = 10, scrollX = TRUE), caption = caption)
+  } else {
+    kable(.data, digits = 3, caption = caption) %>%
+      kable_styling(full_width = FALSE)
+  }
+}
+```
+
+# 前言：為什麼 p 值不顯著也沒關係？
+
+在 **前導研究 (Pilot Study)** 或 **小樣本 (Small N)** 的情況下，統計檢定力 (Power) 通常不足，導致 p 值常徘徊在 0.05 ~ 0.15 之間，甚至更高。這不代表沒有效果，而是代表我們需要用不同的角度來看數據。
+
+本報告採用三種進階視角，幫助您評估效果的真實性與潛力：
+
+1.  **估計統計圖 (Gardner-Altman Plot)**：直接看「差異的分佈」，而不只是 p 值。
+2.  **貝氏因子 (Bayes Factor)**：用證據強度說話（資料支持有效果的倍率）。
+3.  **森林圖 (Forest Plot)**：看每位受試者的效果方向是否一致。
+
+---
+
+# 1. 效果量估計 (Gardner-Altman Plot)
+
+此圖表由 `dabestr` 套件生成。
+*   **左側**：原始數據點與平均值。
+*   **右側**：兩組之間的 **平均差 (Mean Difference)** 及其 **95% Bootstrap 信賴區間**。
+*   **解讀重點**：如果右側的黑色區間 **大部分位於 0 線上方**，即使 p 值不顯著，也強烈暗示效果存在且方向穩定。
+
+```{r dabest_plot, fig.height=5}
+# Dabest Analysis
+# We need to ensure Condition is factor with Congruent as base
+subj_cong$Condition <- factor(subj_cong$Condition, levels = c("Congruent", "Incongruent"))
+
+dabest_obj <- dabestr::load(data = subj_cong, 
+                            x = Condition, 
+                            y = mean_rt,
+                            idx = c("Congruent", "Incongruent"),
+                            paired = "baseline",
+                            id_col = subject)
+
+# Calculate and Plot
+dabest_diff <- dabest_obj %>% dabestr::mean_diff()
+
+dabestr::dabest_plot(dabest_diff, 
+                     raw_plot_ylab = "Mean RT (s)",
+                     effsize_ylab = "Paired Mean Difference (s)",
+                     slopegraph = TRUE)
+```
+
+# 1b. 行為資料快速視覺化（整體）
+
+```{r behavior_overview}
+if (is.null(df) || nrow(df) == 0) {
+  cat("（此情境下無可用試次，無法繪製行為圖。）")
+} else {
+  # 注意：Pilot report 的 setup 可能使用 cleaned data（不含 block_type）。
+  # 因此本段固定優先使用 analysis_data.csv（df_raw_source）來產生「行為快速視覺化」，確保練習/正式筆數統計正確。
+  beh_src <- df_raw_source
+  if (is.null(beh_src)) beh_src <- df
+  
+  beh <- beh_src %>%
+    mutate(
+      rt = suppressWarnings(as.numeric(rt)),
+      acc = suppressWarnings(as.numeric(acc))
+    )
+  
+  # Raw 資料來源時，先排除程序 event 列（避免把開始/結束當成 trial）
+  if ("event" %in% names(beh)) {
+    beh <- beh %>% filter(is.na(event) | event == "")
+  }
+  
+  # 情境：排除受試者
+  if (length(exclude_ids_param) > 0) {
+    beh <- beh %>% filter(!subject %in% exclude_ids_param)
+  }
+  
+  beh <- beh %>%
+    mutate(
+      subject = factor(subject),
+      Condition = factor(condition, levels = c("Congruent", "Incongruent")),
+      Modality = factor(Modality, levels = c("Image", "Text")),
+      acc_used = if (missing_as_error_param) ifelse(is.na(acc), 0, acc) else acc
+    )
+  
+  # 套用 outlier / RT 範圍規則（與其他報告一致）
+  if (!keep_outliers_param) {
+    if (missing_as_error_param) {
+      beh <- beh %>% filter(is.na(rt) | (rt >= rt_min & rt <= rt_max))
+    } else {
+      beh <- beh %>% filter(!is.na(rt), !is.na(acc_used), rt >= rt_min, rt <= rt_max)
+    }
+  } else {
+    if (!missing_as_error_param) {
+      beh <- beh %>% filter(!is.na(rt), !is.na(acc_used))
+    }
+  }
+  
+  summary_tbl <- tibble(
+    Subjects = n_distinct(beh$subject),
+    Trials = nrow(beh),
+    Practice = if ("block_type" %in% names(beh)) sum(str_detect(beh$block_type, "練習")) else NA_integer_,
+    Formal = if ("block_type" %in% names(beh)) sum(str_detect(beh$block_type, "正式")) else NA_integer_,
+    Missing_RT = sum(is.na(beh$rt)),
+    Missing_ACC = sum(is.na(beh$acc_used)),
+    Keep_Outliers = keep_outliers_param,
+    Missing_As_Error = missing_as_error_param
+  )
+  out <- list(
+    as_table(summary_tbl, caption = "資料摘要（已套用情境規則）"),
+    htmltools::HTML("<p><small>說明：本段為離線可開啟之互動式圖表（Plotly）。</small></p>")
+  )
+
+  # 1) Accuracy：Condition × Modality
+  acc_sum <- beh %>%
+    group_by(Condition, Modality) %>%
+    summarise(acc_mean = mean(acc_used, na.rm = TRUE), n = n(), .groups = "drop")
+
+  p_acc <- plotly::plot_ly(
+    acc_sum,
+    x = ~Condition,
+    y = ~acc_mean,
+    color = ~Modality,
+    type = "bar",
+    text = ~sprintf("n=%d<br>ACC=%.1f%%", n, acc_mean * 100),
+    hoverinfo = "text"
+  ) %>%
+    plotly::layout(
+      title = "Accuracy: Condition × Modality",
+      barmode = "group",
+      yaxis = list(title = "Accuracy", tickformat = ".0%", range = c(0, 1)),
+      xaxis = list(title = "Condition")
+    )
+  out <- append(out, list(p_acc))
+
+  # 2) RT 分布（violin；依 Modality 分兩圖）
+  rt_dat <- beh %>% filter(!is.na(rt))
+  if (nrow(rt_dat) > 0) {
+    col_cond <- c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")
+    make_violin <- function(mod) {
+      d <- rt_dat %>% filter(Modality == mod)
+      if (nrow(d) == 0) return(NULL)
+      plotly::plot_ly(
+        d,
+        x = ~Condition,
+        y = ~rt,
+        color = ~Condition,
+        colors = col_cond,
+        type = "violin",
+        box = list(visible = TRUE),
+        meanline = list(visible = TRUE),
+        points = "all",
+        jitter = 0.25,
+        pointpos = 0
+      ) %>%
+        plotly::layout(
+          title = paste0("RT 分布（", mod, "）"),
+          xaxis = list(title = "Condition"),
+          yaxis = list(title = "RT (s)")
+        )
+    }
+
+    p_img <- make_violin("Image")
+    p_txt <- make_violin("Text")
+    if (!is.null(p_img) && !is.null(p_txt)) {
+      out <- append(out, list(plotly::subplot(p_img, p_txt, nrows = 1, shareY = TRUE, titleX = TRUE)))
+    } else if (!is.null(p_img)) {
+      out <- append(out, list(p_img))
+    } else if (!is.null(p_txt)) {
+      out <- append(out, list(p_txt))
+    }
+  }
+
+  # 3) 個體一致性效應（正確試次；Incongruent - Congruent）
+  eff <- beh %>%
+    filter(acc_used == 1, !is.na(rt)) %>%
+    group_by(subject, Condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = Condition, values_from = mean_rt) %>%
+    mutate(effect = Incongruent - Congruent) %>%
+    arrange(effect)
+
+  if (nrow(eff) > 0) {
+    eff$dir <- ifelse(eff$effect > 0, "Incongruent slower (+)", "Incongruent faster (-)")
+    p_eff <- plotly::plot_ly(
+      eff,
+      x = ~effect,
+      y = ~subject,
+      type = "bar",
+      orientation = "h",
+      color = ~dir,
+      colors = c("Incongruent slower (+)" = "#FC4E07", "Incongruent faster (-)" = "#00AFBB"),
+      text = ~sprintf("effect = %.3f s", effect),
+      hoverinfo = "text"
+    ) %>%
+      plotly::layout(
+        title = "Congruency Effect (Correct Trials; Incongruent - Congruent)",
+        xaxis = list(title = "RT difference (s)", zeroline = TRUE),
+        yaxis = list(title = "Subject")
+      )
+    out <- append(out, list(p_eff))
+  }
+
+  # 4) RT 直方圖（依 Condition）
+  if (nrow(rt_dat) > 0) {
+    p_hist <- plotly::plot_ly(
+      rt_dat,
+      x = ~rt,
+      color = ~Condition,
+      colors = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07"),
+      type = "histogram",
+      nbinsx = 40,
+      opacity = 0.55
+    ) %>%
+      plotly::layout(
+        title = "RT Histogram (by Condition)",
+        barmode = "overlay",
+        xaxis = list(title = "RT (s)"),
+        yaxis = list(title = "Count")
+      )
+    out <- append(out, list(p_hist))
+  }
+  
+  out <- Filter(Negate(is.null), out)
+  htmltools::tagList(out)
+}
+```
+
+# 1c. 檢定力與樣本數估計 (Power / Sample Size)
+
+本節將前導研究中「受試者內差值」（例如 *Incongruent − Congruent*）轉為 G*Power 可用的配對效應量 **dz**，並以配對樣本 *t* 檢定之近似公式估計達到目標 power 所需的受試者數 **N（pairs）**。
+
+```{r power_table}
+calc_paired_n <- function(diff_vec, target_power = 0.80, alpha = 0.05, alternative = c("two.sided", "one.sided")) {
+  alternative <- match.arg(alternative)
+  diff_vec <- diff_vec[is.finite(diff_vec)]
+  if (length(diff_vec) < 2) return(NA_real_)
+  delta <- mean(diff_vec, na.rm = TRUE)
+  sd_d  <- sd(diff_vec, na.rm = TRUE)
+  if (is.na(sd_d) || sd_d == 0) return(NA_real_)
+  # power.t.test for paired: sd should be SD of within-subject differences
+  suppressWarnings(power.t.test(
+    delta = abs(delta),
+    sd = sd_d,
+    sig.level = alpha,
+    power = target_power,
+    type = "paired",
+    alternative = alternative
+  )$n)
+}
+
+calc_paired_stats <- function(diff_vec) {
+  diff_vec <- diff_vec[is.finite(diff_vec)]
+  if (length(diff_vec) < 2) return(tibble(n_pilot = length(diff_vec), mean = NA_real_, sd = NA_real_, dz = NA_real_))
+  delta <- mean(diff_vec, na.rm = TRUE)
+  sd_d  <- sd(diff_vec, na.rm = TRUE)
+  dz    <- ifelse(is.na(sd_d) || sd_d == 0, NA_real_, delta / sd_d)
+  tibble(n_pilot = length(diff_vec), mean = delta, sd = sd_d, dz = dz)
+}
+
+# --- Build contrasts (one value per subject) ---
+contrasts <- list()
+
+# Overall CE (collapsed across modality): already computed as subj_wide$Diff
+if ("Diff" %in% names(subj_wide)) {
+  contrasts[["Overall CE (Incong - Cong)"]] <- subj_wide$Diff
+}
+
+# Modality-specific CE
+if ("Modality" %in% names(df)) {
+  subj_mod <- df %>%
+    filter(acc == 1) %>%
+    group_by(subject, Modality, Condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(names_from = Condition, values_from = mean_rt) %>%
+    mutate(Diff = Incongruent - Congruent)
+  
+  if (any(subj_mod$Modality == "Text")) {
+    contrasts[["Text CE (Incong - Cong)"]] <- subj_mod %>% filter(Modality == "Text") %>% pull(Diff)
+  }
+  if (any(subj_mod$Modality == "Image")) {
+    contrasts[["Image CE (Incong - Cong)"]] <- subj_mod %>% filter(Modality == "Image") %>% pull(Diff)
+  }
+}
+
+# Image interaction (CE_Gay - CE_Straight)
+if (all(c("Modality", "Image_Type") %in% names(df))) {
+  subj_img <- df %>%
+    filter(Modality == "Image", acc == 1, !is.na(Image_Type)) %>%
+    group_by(subject, Image_Type, Condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(names_from = Condition, values_from = mean_rt) %>%
+    mutate(CE = Incongruent - Congruent) %>%
+    select(subject, Image_Type, CE) %>%
+    pivot_wider(names_from = Image_Type, values_from = CE)
+  
+  if (all(c("Gay", "Straight") %in% names(subj_img))) {
+    contrasts[["Image interaction (CE_Gay - CE_Straight)"]] <- subj_img$Gay - subj_img$Straight
+  }
+}
+
+# Text valence interaction (CE_Pos - CE_Neg), collapsed across Arousal
+if (all(c("Modality", "Valence") %in% names(df))) {
+  subj_txt <- df %>%
+    filter(Modality == "Text", acc == 1, !is.na(Valence)) %>%
+    group_by(subject, Valence, Condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(names_from = Condition, values_from = mean_rt) %>%
+    mutate(CE = Incongruent - Congruent) %>%
+    select(subject, Valence, CE) %>%
+    pivot_wider(names_from = Valence, values_from = CE)
+  
+  if (all(c("Positive", "Negative") %in% names(subj_txt))) {
+    contrasts[["Text valence interaction (CE_Pos - CE_Neg)"]] <- subj_txt$Positive - subj_txt$Negative
+  }
+}
+
+# --- Summarise power / N ---
+power_tbl <- purrr::imap_dfr(contrasts, function(vec, nm) {
+  st <- calc_paired_stats(vec)
+  tibble(
+    Contrast = nm,
+    N_pilot = st$n_pilot,
+    Mean_Diff_s = st$mean,
+    SD_Diff_s = st$sd,
+    dz = st$dz,
+    N_80_two_sided = ceiling(calc_paired_n(vec, target_power = 0.80, alpha = 0.05, alternative = "two.sided")),
+    N_90_two_sided = ceiling(calc_paired_n(vec, target_power = 0.90, alpha = 0.05, alternative = "two.sided")),
+    N_80_one_sided = ceiling(calc_paired_n(vec, target_power = 0.80, alpha = 0.05, alternative = "one.sided")),
+    N_90_one_sided = ceiling(calc_paired_n(vec, target_power = 0.90, alpha = 0.05, alternative = "one.sided"))
+  )
+})
+
+as_table(power_tbl, caption = "樣本數估計（以 pilot 估得之差值分布推算；單位：受試者 N/pairs）")
+```
+
+---
+
+# 2. 貝氏因子分析 (Bayesian Analysis)
+
+我們使用 **Bayes Factor (BF10)** 來量化證據強度。
+BF10 代表「H1 (有效果) 模型解釋資料的能力是 H0 (沒效果) 的幾倍」。
+
+*   **BF10 > 1**：支持有效果。
+*   **BF10 > 3**：中等證據支持有效果。
+*   **BF10 < 1**：支持沒效果（或資料不足）。
+
+```{r bayes_factor}
+# Paired T-test Bayesian
+bf <- ttestBF(x = subj_wide$Incongruent, y = subj_wide$Congruent, paired = TRUE)
+bf_val <- extractBF(bf)$bf
+
+bf_table <- data.frame(
+  Model = "H1: Incongruent != Congruent",
+  BF10 = bf_val,
+  Evidence_Strength = case_when(
+    bf_val > 100 ~ "極強 (Extreme)",
+    bf_val > 30 ~ "非常強 (Very Strong)",
+    bf_val > 10 ~ "強 (Strong)",
+    bf_val > 3 ~ "中等 (Moderate)",
+    bf_val > 1 ~ "微弱 (Anecdotal)",
+    bf_val == 1 ~ "無偏向 (No Evidence)",
+    bf_val < 1 ~ "支持虛無假設 (Support H0)"
+  )
+)
+
+as_table(bf_table, caption = "貝氏因子 (Bayes Factor) 分析結果")
+```
+
+**解讀：** 
+若 BF10 在 1~3 之間，代表雖然支持有效果，但證據還不夠強（資料量不足），這正是 Pilot Study 常見的情況，建議增加樣本數。
+
+---
+
+# 3. 個體效應森林圖 (Forest Plot)
+
+檢視每一位受試者的一致性效應 (CE = Inc - Con)。
+*   **點**：該受試者的 CE 值。
+*   **線**：該受試者的試驗內變異 (SE)。
+*   **虛線**：0 (無效應)。
+
+如果大多數點都落在 0 的右側（正值），代表效果具有 **普遍性 (Generality)**，並非由少數極端值驅動。
+
+```{r forest_plot, fig.height=6}
+# Calculate individual d and CI
+# We need trial level data for this to get within-subject SE for the difference?
+# Or simply plot the Mean Difference for each subject.
+# A simple Forest plot for Within-Subject usually plots the Mean Difference +/- SE of diff.
+# Since we don't have paired trials (random order), we approximate SE diff using pooled SD or similar?
+# Simpler approach: Plot Mean Difference per subject.
+
+subj_stats <- df %>%
+  filter(acc == 1) %>% # Correct trials only
+  group_by(subject) %>%
+  summarise(
+    Mean_Con = mean(rt[Condition == "Congruent"], na.rm=T),
+    Mean_Inc = mean(rt[Condition == "Incongruent"], na.rm=T),
+    # Naive SE of difference calculation
+    Var_Con = var(rt[Condition == "Congruent"], na.rm=T),
+    n_Con = sum(!is.na(rt[Condition == "Congruent"])),
+    Var_Inc = var(rt[Condition == "Incongruent"], na.rm=T),
+    n_Inc = sum(!is.na(rt[Condition == "Incongruent"])),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Diff = Mean_Inc - Mean_Con,
+    SE_Diff = sqrt(Var_Con/n_Con + Var_Inc/n_Inc) # Independent approximation for error bars visualization
+  ) %>%
+  arrange(desc(Diff))
+
+# Grand Mean Difference
+grand_mean_diff <- mean(subj_stats$Diff, na.rm = TRUE)
+
+ggplot(subj_stats, aes(x = reorder(subject, Diff), y = Diff)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_hline(yintercept = grand_mean_diff, linetype = "dotted", color = "red", alpha=0.6) +
+  geom_errorbar(aes(ymin = Diff - SE_Diff, ymax = Diff + SE_Diff), width = 0.2, color = "gray30") +
+  geom_point(size = 3, color = "#2c3e50") +
+  coord_flip() +
+  theme_pubr() +
+  labs(
+    title = "個體一致性效應 (Congruency Effect by Subject)",
+    subtitle = "Error bars represent SE of difference (approx)",
+    x = "Subject",
+    y = "Effect Size (Incongruent - Congruent) [s]"
+  ) +
+  annotate("text", x = 1, y = grand_mean_diff, label = paste("Mean =", round(grand_mean_diff, 3)), 
+           color = "red", vjust = -1, hjust = -0.1)
+
+```
+
+---
+
+# 總結建議
+
+根據上述三項指標：
+
+1.  **Gardner-Altman 圖** 是否顯示大多數差值分佈在 0 以上？
+2.  **貝氏因子** 是否大於 1（甚至大於 3）？
+3.  **森林圖** 是否顯示多數受試者的一致性效應為正值？
+
+若三者皆傾向支持，即使目前 p 值僅有 0.1，您也有充分理由宣稱：**「本前導研究觀察到穩定的效果趨勢，值得擴大樣本數進行正式實驗。」**

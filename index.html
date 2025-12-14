@@ -301,6 +301,266 @@
         </div>
     </div>
 
+    <!-- Behavior Dashboard Section -->
+    <h3 class="section-title"><i class="fas fa-gauge-high me-2"></i>互動式 Dashboard（RT / Accuracy）</h3>
+    <div class="row">
+        <!-- Standard Dashboard -->
+        <div class="col-lg-6">
+            <div class="glass-card">
+                <div class="glass-header">
+                    <i class="fas fa-chart-bar me-2"></i> 標準 Dashboard (排除極端值)
+                </div>
+                <div class="glass-body">
+                    <p class="card-text text-white-50 mb-4">
+                        互動式篩選（Subject / Block / Modality / Condition / Accuracy / RT 視窗）。
+                    </p>
+                    
+                    <div class="btn-group-glass">
+                        <a href="Base/Behavior_Dashboard.html" class="btn btn-glass">
+                            <span><i class="fas fa-gauge"></i> Base Dashboard</span>
+                        </a>
+                    </div>
+                    <div class="btn-group-glass">
+                        <a href="Exclude_S5S10/Behavior_Dashboard.html" class="btn btn-glass">
+                            <span><i class="fas fa-user-slash"></i> 排除 S5/S10 Dashboard</span>
+                        </a>
+                    </div>
+                    <div class="btn-group-glass">
+                        <a href="MissingAsError/Behavior_Dashboard.html" class="btn btn-glass">
+                            <span><i class="fas fa-exclamation-circle"></i> 漏答視為錯誤 Dashboard</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- No Outlier Dashboard -->
+        <div class="col-lg-6">
+            <div class="glass-card">
+                <div class="glass-header danger-zone">
+                    <i class="fas fa-chart-area me-2"></i> 完整數據 Dashboard (保留極端值)
+                </div>
+                <div class="glass-body">
+                    <p class="card-text text-white-50 mb-4">
+                        同樣提供互動式篩選，但保留所有有效 RT（含極端值）。
+                    </p>
+                    
+                    <div class="btn-group-glass">
+                        <a href="NoOutlierExclusion/Behavior_Dashboard_Base.html" class="btn btn-glass btn-glass-danger">
+                            <span><i class="fas fa-gauge"></i> Base Dashboard</span>
+                        </a>
+                    </div>
+                    <div class="btn-group-glass">
+                        <a href="NoOutlierExclusion/Behavior_Dashboard_Exclude.html" class="btn btn-glass btn-glass-danger">
+                            <span><i class="fas fa-user-times"></i> 排除 S5/S10 Dashboard</span>
+                        </a>
+                    </div>
+                    <div class="btn-group-glass">
+                        <a href="NoOutlierExclusion/Behavior_Dashboard_Missing.html" class="btn btn-glass btn-glass-danger">
+                            <span><i class="fas fa-exclamation-triangle"></i> 漏答視為錯誤 Dashboard</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Consolidated Report Book Section -->
+    <h3 class="section-title"><i class="fas fa-book-open me-2"></i>整合報告書（互動＋圖片版）</h3>
+    <div class="row">
+        <div class="col-lg-12">
+            <div class="glass-card">
+                <div class="glass-header">
+                    <i class="fas fa-book me-2"></i> Behavior Report Book
+                </div>
+                <div class="glass-body">
+                    <p class="card-text text-white-50 mb-4">
+                        將六種情境的關鍵輸出（互動式 Plotly ＋ PNG 圖片版〔含數值標記〕）整合在單一報告書中，便於快速檢視與分享。
+                    </p>
+                    <div class="btn-group-glass">
+                        <a href="Behavior_Report_Book.html" class="btn btn-glass" style="justify-content: center;">
+                            <span><i class="fas fa-book-open-reader"></i> 開啟整合報告書</span>
+                        </a>
+                    </div>
+                    <div class="btn-group-glass mt-2">
+                        <a href="Behavior_Thesis_Report.docx" class="btn btn-glass btn-glass-secondary" style="justify-content: center;">
+                            <span><i class="fas fa-file-word"></i> 下載/開啟 論文式紙本報告（Word）</span>
+                        </a>
+                    </div>
+                    <div class="btn-group-glass mt-2">
+                        <a href="R/docs/Build_Pipeline_Runbook.html" class="btn btn-glass btn-glass-secondary" style="justify-content: center;">
+                            <span><i class="fas fa-code"></i> Pipeline / R Scripts 說明（Runbook）</span>
+                        </a>
+                    </div>
+                    <div class="btn-group-glass mt-2">
+                        <a href="R/docs/Make_Behavior_Plots_From_Raw.html" class="btn btn-glass btn-glass-secondary" style="justify-content: center;">
+                            <span><i class="fas fa-image"></i> 產圖工具：RAW CSV → PNG（Rmd）</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Review / QC Section -->
+    <h3 class="section-title"><i class="fas fa-shield-halved me-2"></i>Review / QC（RT × 按鍵時間核對）</h3>
+    <div class="row">
+        <div class="col-lg-12">
+            <div class="glass-card">
+                <div class="glass-header">
+                    <i class="fas fa-check-double me-2"></i> 一致性核對報告
+                </div>
+                <div class="glass-body">
+                    <p class="card-text text-white-50 mb-4">
+                        針對每位受試者的 <strong>trial=120（練習20＋正式100）</strong>、程序 <strong>event=8</strong>、以及 <strong>RAW RT / 按鍵時間</strong> 與整理後資料一致性進行核對。
+                    </p>
+                    <div class="btn-group-glass">
+                        <a href="QC/Review_Report.html" class="btn btn-glass" style="justify-content: center;">
+                            <span><i class="fas fa-file-circle-check"></i> 開啟 Review 報告</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Non-Parametric Analysis Section -->
+    <h3 class="section-title"><i class="fas fa-chart-line me-2"></i>無母數檢定 (Non-Parametric Tests)</h3>
+    <div class="row">
+        <!-- Standard Non-Parametric -->
+        <div class="col-lg-6">
+            <div class="glass-card">
+                <div class="glass-header" style="background: rgba(255, 193, 7, 0.15); color: #ffc107;">
+                    <i class="fas fa-bezier-curve me-2"></i> 標準無母數分析 (排除極端值)
+                </div>
+                <div class="glass-body">
+                    <p class="card-text text-white-50 mb-4">
+                        Wilcoxon / Friedman Test (排除 < 200ms 或 > 1500ms)。
+                    </p>
+                    
+                    <!-- Base -->
+                    <div class="btn-group-glass">
+                        <a href="Base/Master_Report_NonParametric.html" class="btn btn-glass" style="border-right:none; border-color: rgba(255, 193, 7, 0.3);">
+                            <span style="color: #ffca2c;"><i class="fas fa-file-alt"></i> 基礎無母數報告</span>
+                        </a>
+                        <a href="Base/Interpretation_NonParametric.html" class="btn btn-glass btn-glass-secondary" title="查看統計解讀" style="border-left:none; min-width:100px; justify-content:center;">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+
+                    <!-- Exclude S5/S10 -->
+                    <div class="btn-group-glass">
+                        <a href="Exclude_S5S10/Master_Report_NonParametric.html" class="btn btn-glass" style="border-right:none; border-color: rgba(255, 193, 7, 0.3);">
+                            <span style="color: #ffca2c;"><i class="fas fa-user-slash"></i> 排除 S5/S10</span>
+                        </a>
+                        <a href="Exclude_S5S10/Interpretation_NonParametric.html" class="btn btn-glass btn-glass-secondary" title="查看統計解讀" style="border-left:none; min-width:100px; justify-content:center;">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+
+                    <!-- Missing As Error -->
+                    <div class="btn-group-glass">
+                        <a href="MissingAsError/Master_Report_NonParametric.html" class="btn btn-glass" style="border-right:none; border-color: rgba(255, 193, 7, 0.3);">
+                            <span style="color: #ffca2c;"><i class="fas fa-exclamation-circle"></i> 漏答視為錯誤</span>
+                        </a>
+                        <a href="MissingAsError/Interpretation_NonParametric.html" class="btn btn-glass btn-glass-secondary" title="查看統計解讀" style="border-left:none; min-width:100px; justify-content:center;">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- No Outlier Non-Parametric -->
+        <div class="col-lg-6">
+            <div class="glass-card">
+                <div class="glass-header" style="background: rgba(253, 126, 20, 0.15); color: #fd7e14;">
+                    <i class="fas fa-wave-square me-2"></i> 完整數據無母數 (保留極端值)
+                </div>
+                <div class="glass-body">
+                    <p class="card-text text-white-50 mb-4">
+                        Wilcoxon / Friedman Test (保留所有有效 RT)。
+                    </p>
+                    
+                    <!-- Base No Outlier -->
+                    <div class="btn-group-glass">
+                        <a href="NoOutlierExclusion/Report_Base_NonParametric_NoOutlier.html" class="btn btn-glass" style="border-right:none; border-color: rgba(253, 126, 20, 0.3);">
+                            <span style="color: #fd7e14;"><i class="fas fa-file-contract"></i> 基礎無母數報告</span>
+                        </a>
+                        <a href="NoOutlierExclusion/Interpretation_NoOutlier_Base.html" class="btn btn-glass btn-glass-secondary" title="查看統計解讀" style="border-left:none; min-width:100px; justify-content:center;">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+
+                    <!-- Exclude No Outlier -->
+                    <div class="btn-group-glass">
+                        <a href="NoOutlierExclusion/Report_Exclude_NonParametric_NoOutlier.html" class="btn btn-glass" style="border-right:none; border-color: rgba(253, 126, 20, 0.3);">
+                            <span style="color: #fd7e14;"><i class="fas fa-user-times"></i> 排除 S5/S10</span>
+                        </a>
+                        <a href="NoOutlierExclusion/Interpretation_NoOutlier_Exclude.html" class="btn btn-glass btn-glass-secondary" title="查看統計解讀" style="border-left:none; min-width:100px; justify-content:center;">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+
+                    <!-- Missing No Outlier -->
+                    <div class="btn-group-glass">
+                        <a href="NoOutlierExclusion/Report_Missing_NonParametric_NoOutlier.html" class="btn btn-glass" style="border-right:none; border-color: rgba(253, 126, 20, 0.3);">
+                            <span style="color: #fd7e14;"><i class="fas fa-exclamation-triangle"></i> 漏答視為錯誤</span>
+                        </a>
+                        <a href="NoOutlierExclusion/Interpretation_NoOutlier_Missing.html" class="btn btn-glass btn-glass-secondary" title="查看統計解讀" style="border-left:none; min-width:100px; justify-content:center;">
+                            <i class="fas fa-glasses"></i> 解讀
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pilot Insight Section -->
+    <h3 class="section-title"><i class="fas fa-lightbulb me-2"></i>前導研究深度洞察 (Pilot Insight)</h3>
+    <div class="glass-card">
+        <div class="glass-header" style="background: rgba(111, 66, 193, 0.15); color: #d63384;">
+            <i class="fas fa-microscope me-2"></i> 小樣本效果量與貝氏因子分析
+        </div>
+        <div class="glass-body">
+            <p class="card-text text-white-50 mb-4">
+                適用於樣本數較少 (Pilot) 的情境。包含 <strong>Gardner-Altman 估計圖</strong>、<strong>貝氏因子 (Bayes Factor)</strong> 與 <strong>個體效應森林圖</strong>。
+            </p>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <a href="Base/Pilot_Insight_Report.html" class="btn btn-glass" style="justify-content: center; border-color: rgba(111, 66, 193, 0.4);">
+                        <span style="color: #e0aaff;"><i class="fas fa-rocket me-2"></i> 基礎洞察報告 (Base)</span>
+                    </a>
+                </div>
+                <div class="col-md-6">
+                    <a href="Exclude_S5S10/Pilot_Insight_Report.html" class="btn btn-glass" style="justify-content: center; border-color: rgba(111, 66, 193, 0.4);">
+                        <span style="color: #e0aaff;"><i class="fas fa-user-astronaut me-2"></i> 排除 S5/S10 洞察報告</span>
+                    </a>
+                </div>
+                <div class="col-md-6">
+                    <a href="MissingAsError/Pilot_Insight_Report.html" class="btn btn-glass" style="justify-content: center; border-color: rgba(111, 66, 193, 0.4);">
+                        <span style="color: #e0aaff;"><i class="fas fa-triangle-exclamation me-2"></i> 漏答視為錯誤 洞察報告</span>
+                    </a>
+                </div>
+                <div class="col-md-6">
+                    <a href="NoOutlierExclusion/Pilot_Insight_Report_Base_NoOutlier.html" class="btn btn-glass btn-glass-danger" style="justify-content: center; border-color: rgba(220, 53, 69, 0.4);">
+                        <span><i class="fas fa-biohazard me-2"></i> Base 洞察報告（保留離群值）</span>
+                    </a>
+                </div>
+                <div class="col-md-6">
+                    <a href="NoOutlierExclusion/Pilot_Insight_Report_Exclude_NoOutlier.html" class="btn btn-glass btn-glass-danger" style="justify-content: center; border-color: rgba(220, 53, 69, 0.4);">
+                        <span><i class="fas fa-user-times me-2"></i> 排除 S5/S10（保留離群值）</span>
+                    </a>
+                </div>
+                <div class="col-md-6">
+                    <a href="NoOutlierExclusion/Pilot_Insight_Report_Missing_NoOutlier.html" class="btn btn-glass btn-glass-danger" style="justify-content: center; border-color: rgba(220, 53, 69, 0.4);">
+                        <span><i class="fas fa-exclamation-triangle me-2"></i> 漏答視為錯誤（保留離群值）</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <h3 class="section-title"><i class="fas fa-users me-2"></i>個別受試者詳細報告</h3>
     <div class="glass-card">
         <div class="glass-body">

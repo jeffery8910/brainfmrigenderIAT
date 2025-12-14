@@ -1,5 +1,0 @@
-"Modality","Condition","Total","Correct","Acc","Acc_Pct"
-"Image","Congruent",25,24,0.96,"96%"
-"Image","Incongruent",25,25,1,"100%"
-"Text","Congruent",25,19,0.76,"76%"
-"Text","Incongruent",24,23,0.958333333333333,"95.8%"

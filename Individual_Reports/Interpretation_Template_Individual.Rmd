@@ -1,5 +1,6 @@
 ---
 title: "結果解讀報告"
+author: "組員劉鎮臺編寫報告"
 output:
   html_document:
     theme: flatly
@@ -15,6 +16,8 @@ library(openxlsx)
 library(tidyverse)
 library(knitr)
 library(kableExtra)
+library(DT)
+if (requireNamespace("plotly", quietly = TRUE)) library(plotly)
 
 # Load Data
 xlsx_file <- params$xlsx_path
@@ -28,6 +31,22 @@ if(!file.exists(xlsx_file)) {
 res_ttest <- tryCatch(read.xlsx(xlsx_file, sheet = "T_Test_Results"), error = function(e) NULL)
 sum_acc   <- tryCatch(read.xlsx(xlsx_file, sheet = "Summary_Accuracy"), error = function(e) NULL)
 sum_rt    <- tryCatch(read.xlsx(xlsx_file, sheet = "Summary_RT"), error = function(e) NULL)
+raw_df    <- tryCatch(read.xlsx(xlsx_file, sheet = "Raw_Data"), error = function(e) NULL)
+
+if (!is.null(raw_df)) {
+  # Make column names consistent (raw_df comes from cleaned_trial_level_data.csv)
+  if (!"condition" %in% names(raw_df) && "Condition" %in% names(raw_df)) raw_df$condition <- raw_df$Condition
+  if (!"Modality" %in% names(raw_df) && "modality" %in% names(raw_df)) raw_df$Modality <- raw_df$modality
+
+  raw_df <- raw_df %>%
+    mutate(
+      rt = suppressWarnings(as.numeric(rt)),
+      acc = suppressWarnings(as.numeric(acc)),
+      condition = factor(condition, levels = c("Congruent", "Incongruent")),
+      Modality = factor(Modality, levels = c("Image", "Text")),
+      acc_label = ifelse(acc == 1, "Correct", "Incorrect")
+    )
+}
 
 # Helper function for text
 get_sig_text <- function(p) {
@@ -114,6 +133,82 @@ if(!is.null(res_ttest)) {
 }
 ```
 
+## 1b. 對應圖表：一致性效應（`r subj`）
+
+```{r ttest_plots}
+if (!is.null(raw_df) && nrow(raw_df) > 0) {
+  out <- list()
+
+  # RT 分布（violin；依 Modality 分兩圖）
+  rt_dat <- raw_df %>% filter(!is.na(rt))
+  if (nrow(rt_dat) > 0) {
+    col_cond <- c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")
+
+    make_violin <- function(mod) {
+      d <- rt_dat %>% filter(Modality == mod)
+      if (nrow(d) == 0) return(NULL)
+      plotly::plot_ly(
+        d,
+        x = ~condition,
+        y = ~rt,
+        color = ~condition,
+        colors = col_cond,
+        type = "violin",
+        box = list(visible = TRUE),
+        meanline = list(visible = TRUE),
+        points = "all",
+        jitter = 0.25,
+        pointpos = 0
+      ) %>%
+        plotly::layout(
+          title = paste0("RT Distribution (", subj, "; ", mod, ")"),
+          xaxis = list(title = "Condition"),
+          yaxis = list(title = "RT (s)")
+        )
+    }
+
+    p_img <- make_violin("Image")
+    p_txt <- make_violin("Text")
+    if (!is.null(p_img) && !is.null(p_txt)) {
+      out <- append(out, list(plotly::subplot(p_img, p_txt, nrows = 1, shareY = TRUE, titleX = TRUE)))
+    } else if (!is.null(p_img)) {
+      out <- append(out, list(p_img))
+    } else if (!is.null(p_txt)) {
+      out <- append(out, list(p_txt))
+    }
+  }
+
+  # 一致性效應（正確試次；各模態 CE = Incongruent - Congruent）
+  eff <- raw_df %>%
+    filter(acc == 1, !is.na(rt), !is.na(condition), !is.na(Modality)) %>%
+    group_by(Modality, condition) %>%
+    summarise(mean_rt = mean(rt, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = condition, values_from = mean_rt) %>%
+    mutate(effect = Incongruent - Congruent) %>%
+    select(Modality, effect)
+
+  if (nrow(eff) > 0) {
+    p_eff <- plotly::plot_ly(
+      eff,
+      x = ~Modality,
+      y = ~effect,
+      type = "bar",
+      text = ~sprintf("CE=%.3f s", effect),
+      hoverinfo = "text"
+    ) %>%
+      plotly::layout(
+        title = paste0("Congruency Effect (", subj, "; Correct Trials)"),
+        yaxis = list(title = "CE (s) = Incongruent - Congruent"),
+        xaxis = list(title = "Modality")
+      )
+    out <- append(out, list(p_eff))
+  }
+
+  out <- Filter(Negate(is.null), out)
+  if (length(out) > 0) htmltools::tagList(out)
+}
+```
+
 ## 2. 準確度概況 (Accuracy Overview)
 
 ```{r acc_interp, results='asis'}
@@ -124,6 +219,27 @@ if(!is.null(sum_acc)) {
     cat(paste0("<tr><td>", r$Modality, "</td><td>", r$Condition, "</td><td>", r$Correct, "</td><td>", r$Total, "</td><td><strong>", r$Acc_Pct, "</strong></td></tr>"))
   }
   cat("</tbody></table>")
+}
+```
+
+```{r acc_plot}
+if (!is.null(sum_acc) && nrow(sum_acc) > 0) {
+  sum_acc$Acc <- suppressWarnings(as.numeric(sum_acc$Acc))
+  p <- plotly::plot_ly(
+    sum_acc,
+    x = ~Condition,
+    y = ~Acc,
+    color = ~Modality,
+    type = "bar",
+    text = ~paste0("Correct=", Correct, "<br>Total=", Total, "<br>Acc=", Acc_Pct),
+    hoverinfo = "text"
+  ) %>%
+    plotly::layout(
+      title = paste0("Accuracy: Condition × Modality (", subj, ")"),
+      barmode = "group",
+      yaxis = list(title = "Accuracy", tickformat = ".0%", range = c(0, 1))
+    )
+  p
 }
 ```
 

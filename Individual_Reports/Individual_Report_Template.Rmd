@@ -1,7 +1,9 @@
 ---
 title: "Individual Subject Report"
-author: "Automated Analysis"
+author: "組員劉鎮臺編寫報告"
 output: html_document
+params:
+  subject_id: "S001"
 ---
 
 ```{r setup, include=FALSE}
@@ -14,6 +16,7 @@ library(knitr)
 library(kableExtra)
 library(plotly)
 library(DT)
+library(htmltools)
 library(openxlsx)
 
 # Manually handle params since we removed them from YAML to fix Pandoc error
@@ -21,29 +24,89 @@ if(!exists("params")) {
   params <- list(subject_id = "S001")
 }
 
-# Path
-data_path_clean  <- file.path("..","..","..","Statistical_Analysis_Implementation","cleaned_trial_level_data.csv")
-df_full <- read.csv(data_path_clean)
-subj_id <- params$subject_id
-df <- df_full %>% filter(subject == subj_id)
+safe_ggplotly <- function(p) {
+  if (knitr::is_html_output()) {
+    out <- tryCatch(plotly::ggplotly(p), error = function(e) NULL)
+    if (!is.null(out)) return(out)
+  }
+  return(p)
+}
 
-if(nrow(df) > 0) {
-  df <- df %>%
+rt_min <- 0.2
+rt_max <- 1.5
+
+find_first <- function(vec) {
+  for (p in vec) if (!is.na(p) && file.exists(p)) return(p)
+  return(NULL)
+}
+
+subj_id <- params$subject_id
+
+# 以 analysis_data.csv 為資料來源（含練習/正式、含程序 event、含漏答）
+analysis_path_raw <- find_first(c(
+  file.path("..","..","..","Thesis_Analysis_Output","analysis_data.csv"),
+  file.path("..","..","Thesis_Analysis_Output","analysis_data.csv"),
+  file.path("..","Thesis_Analysis_Output","analysis_data.csv"),
+  file.path("Thesis_Analysis_Output","analysis_data.csv")
+))
+
+df_subj_all <- NULL
+df_stored <- NULL   # Stored trial rows（含練習/正式、含漏答；不含 event）
+df_events <- NULL   # 程序 event rows（不納入分析）
+df <- NULL          # Used trial rows（套用清理規則；供統計分析）
+
+if (!is.null(analysis_path_raw)) {
+  df_subj_all <- read.csv(analysis_path_raw, stringsAsFactors = FALSE) %>%
+    filter(subject == subj_id) %>%
     mutate(
-      Condition = factor(condition),
-      Modality  = factor(Modality),
+      rt = suppressWarnings(as.numeric(rt)),
+      acc = suppressWarnings(as.numeric(acc))
+    )
+  
+  df_stored <- df_subj_all %>% filter(is.na(event) | event == "")
+  df_events <- df_subj_all %>% filter(!(is.na(event) | event == ""))
+  
+  # Used（與 Base 情境一致）：排除 NA rt/acc，並限制 RT 範圍
+  df <- df_stored %>%
+    filter(!is.na(rt), !is.na(acc), rt >= rt_min, rt <= rt_max)
+}
+
+prep_trials <- function(d) {
+  if (is.null(d) || nrow(d) == 0) return(d)
+  out <- d %>%
+    mutate(
+      Condition = factor(condition, levels = c("Congruent", "Incongruent")),
+      Modality  = factor(Modality, levels = c("Image", "Text")),
       Valence   = factor(Valence),
       Arousal   = factor(Arousal),
-      acc_label = ifelse(acc == 1, "正確", "錯誤")
+      acc_label = case_when(
+        is.na(acc) ~ "漏答",
+        acc == 1 ~ "正確",
+        TRUE ~ "錯誤"
+      )
     )
-  if ("Image_Type" %in% names(df)) df$Image_Type <- factor(df$Image_Type)
+  if ("Image_Type" %in% names(out)) out$Image_Type <- factor(out$Image_Type)
+  out
+}
+
+df_stored <- prep_trials(df_stored)
+df <- prep_trials(df)
+
+if (!is.null(df) && nrow(df) > 1 && is.finite(sd(df$rt, na.rm = TRUE)) && sd(df$rt, na.rm = TRUE) > 0) {
+  df <- df %>%
+    mutate(
+      rt_z = (rt - mean(rt, na.rm = TRUE)) / sd(rt, na.rm = TRUE),
+      outlier_flag = abs(rt_z) > 2.5
+    )
 }
 
 excel_sheets <- list()
-if(nrow(df) > 0) excel_sheets[["Raw_Data"]] <- df
+if (!is.null(df_stored) && nrow(df_stored) > 0) excel_sheets[["Stored_Trials"]] <- df_stored
+if (!is.null(df_events) && nrow(df_events) > 0) excel_sheets[["Event_Rows"]] <- df_events
+if (!is.null(df) && nrow(df) > 0) excel_sheets[["Raw_Data"]] <- df
 
 as_table <- function(.data, caption = "") {
-  DT::datatable(.data, options = list(pageLength = 10, scrollX = TRUE, language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Chinese-traditional.json')), caption = caption)
+  DT::datatable(.data, options = list(pageLength = 10, scrollX = TRUE), caption = caption)
 }
 
 interpret_p <- function(p_val) {
@@ -60,6 +123,46 @@ interpret_p <- function(p_val) {
 
 **建立日期:** `r format(Sys.time(), "%Y-%m-%d")`
 
+# 0. 資料筆數核對（Stored vs Used）
+
+```{r count_check}
+if (is.null(df_subj_all)) {
+  cat("（找不到 analysis_data.csv，無法顯示 Stored/Used 筆數核對。）")
+} else {
+  stored_sum <- tibble(
+    Subject = subj_id,
+    Total_Rows = nrow(df_subj_all),
+    Trial_Rows_Stored = if (!is.null(df_stored)) nrow(df_stored) else 0,
+    Event_Rows = if (!is.null(df_events)) nrow(df_events) else 0,
+    Practice_Stored = if (!is.null(df_stored) && "block_type" %in% names(df_stored)) sum(str_detect(df_stored$block_type, "練習")) else NA_integer_,
+    Formal_Stored = if (!is.null(df_stored) && "block_type" %in% names(df_stored)) sum(str_detect(df_stored$block_type, "正式")) else NA_integer_,
+    Congruent_Stored = if (!is.null(df_stored)) sum(df_stored$condition == "Congruent", na.rm = TRUE) else NA_integer_,
+    Incongruent_Stored = if (!is.null(df_stored)) sum(df_stored$condition == "Incongruent", na.rm = TRUE) else NA_integer_,
+    Missing_RT_Stored = if (!is.null(df_stored)) sum(is.na(df_stored$rt)) else NA_integer_,
+    Missing_ACC_Stored = if (!is.null(df_stored)) sum(is.na(df_stored$acc)) else NA_integer_
+  )
+  
+  used_sum <- tibble(
+    Subject = subj_id,
+    Trials_Used = if (!is.null(df)) nrow(df) else 0,
+    RT_Min_Used = if (!is.null(df) && nrow(df) > 0) min(df$rt, na.rm = TRUE) else NA_real_,
+    RT_Max_Used = if (!is.null(df) && nrow(df) > 0) max(df$rt, na.rm = TRUE) else NA_real_,
+    RT_Range = sprintf("[%.1f, %.1f] s", rt_min, rt_max)
+  )
+  
+  out <- list(
+    as_table(stored_sum, caption = "Stored（含練習/正式、含漏答；trial=120；event=8；每人 total=128）"),
+    as_table(used_sum, caption = "Used（本頁統計用：排除 NA rt/acc；RT in [0.2, 1.5] 秒）")
+  )
+  
+  if (!is.null(df_events) && nrow(df_events) > 0) {
+    out <- append(out, list(as_table(df_events, caption = "程序 event 列（不納入分析）")))
+  }
+  
+  htmltools::tagList(out)
+}
+```
+
 # 1. 資料概覽 (Overview) {.tabset}
 
 ## 反應時間分布
@@ -74,9 +177,9 @@ if(nrow(df) > 0 && any(!is.na(df$rt))) {
     scale_fill_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
     facet_wrap(~Modality) +
     theme_pubr() +
-    labs(y = "反應時間 (秒)", title = "反應時間分布圖") +
+    labs(y = "反應時間 (秒)", title = paste0("反應時間分布圖（", subj_id, "）")) +
     theme(legend.position = "bottom")
-  ggplotly(p)
+  safe_ggplotly(p)
 }
 ```
 
@@ -90,8 +193,8 @@ if(nrow(df) > 0 && any(!is.na(df$rt))) {
     geom_point(alpha = 0.5) +
     scale_color_manual(values = c("Congruent" = "#00AFBB", "Incongruent" = "#FC4E07")) +
     theme_pubr() +
-    labs(x = "試驗順序 (Trial)", y = "反應時間 (秒)", title = "逐題反應趨勢")
-  ggplotly(p)
+    labs(x = "試驗順序 (Trial)", y = "反應時間 (秒)", title = paste0("逐題反應趨勢（", subj_id, "）"))
+  safe_ggplotly(p)
 }
 ```
 
@@ -173,7 +276,8 @@ if(!is.null(res)) {
     cat(paste0("- **顯著性判斷**: ", p_txt, "\n"))
     cat(paste0("- **統計數值**: t(", row$df, ") = ", sprintf("%.3f", row$statistic), ", p = ", format.pval(row$p, digits=3), "\n"))
     cat(paste0("- **效應方向**: 不一致情境相較於一致情境反應時間 **", dir_str, "** (平均差 = ", sprintf("%.3f", diff), " 秒)。\n\n"))
-    cat("---\n")
+    # 避免 pandoc 將 '--- ... ---' 誤判為 YAML metadata block（會導致 YAML parse error）
+    cat("***\n\n")
   }
 }
 ```
@@ -191,5 +295,18 @@ if(length(excel_sheets) > 0) {
 # 4. 原始資料 (Raw Data)
 
 ```{r raw}
-as_table(df, caption = "受試者原始資料表")
+out <- list()
+
+if (!is.null(df_stored) && nrow(df_stored) > 0) {
+  out <- append(out, list(as_table(df_stored, caption = "Stored trials（含練習/正式、含漏答；不含 event）")))
+}
+if (!is.null(df) && nrow(df) > 0) {
+  out <- append(out, list(as_table(df, caption = "Used trials（本頁統計用：排除 NA rt/acc；RT in [0.2, 1.5] 秒）")))
+}
+
+if (length(out) == 0) {
+  cat("（此受試者無可顯示資料。）")
+} else {
+  htmltools::tagList(out)
+}
 ```
